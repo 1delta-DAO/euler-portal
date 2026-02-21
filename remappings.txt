@@ -1,0 +1,5 @@
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+forge-std/=lib/forge-std/src/
+ethereum-vault-connector/=lib/ethereum-vault-connector/src/
+evk/=lib/euler-vault-kit/src/
+evk-periphery/=lib/evk-periphery/src/

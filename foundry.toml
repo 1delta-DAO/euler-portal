@@ -1,0 +1,63 @@
+[profile.default]
+solc_version = "0.8.34"
+evm_version = "prague"
+optimizer_runs = 5_000
+via_ir = true
+src = "contracts"
+out = "out"
+libs = ["lib"]
+
+[fmt]
+line_length = 130
+tab_width = 4
+multiline_func_header = "all"
+
+[lint]
+exclude_lints = [
+    "mixed-case-variable",
+    "named-struct-fields",
+    "unused-import",
+    "screaming-snake-case-const",
+    "mixed-case-function",
+]
+
+[fuzz]
+runs = 10000
+
+# RPC Overrides
+RPC_ETHEREUM_MAINNET = "https://eth.drpc.org"
+RPC_BNB_SMART_CHAIN_MAINNET = "https://binance.llamarpc.com"
+RPC_BASE = "https://base.llamarpc.com"
+RPC_PLASMA_MAINNET = "https://rpc.plasma.to"
+RPC_ARBITRUM_ONE = "https://1rpc.io/arb"
+RPC_AVALANCHE_C_CHAIN = "https://avalanche-c-chain-rpc.publicnode.com"
+RPC_POLYGON_MAINNET = "https://polygon-rpc.com/"
+RPC_KATANA = "https://rpc.katana.network"
+RPC_BERACHAIN = "https://rpc.berachain.com"
+RPC_CRONOS_MAINNET = "https://cronos.drpc.org"
+RPC_LINEA = "https://rpc.linea.build"
+RPC_OP_MAINNET = "https://mainnet.optimism.io"
+RPC_BLAST = "https://rpc.blast.io"
+RPC_CELO_MAINNET = "https://celo.drpc.org"
+RPC_CORE_BLOCKCHAIN_MAINNET = "https://rpc.coredao.org/"
+RPC_FANTOM_OPERA = "https://1rpc.io/ftm"
+RPC_HEMI_NETWORK = "https://rpc.hemi.network/rpc"
+RPC_HYPEREVM = "https://rpc.hyperliquid.xyz/evm"
+RPC_KAIA_MAINNET = "https://public-en.node.kaia.io"
+RPC_MANTA_PACIFIC_MAINNET = "https://1rpc.io/manta"
+RPC_MANTLE = "https://rpc.mantle.xyz"
+RPC_METIS_ANDROMEDA_MAINNET = "https://metis.drpc.org"
+RPC_MODE = "https://mainnet.mode.network"
+RPC_MOONBEAM = "https://rpc.api.moonbeam.network"
+RPC_MORPH = "https://rpc.morphl2.io"
+RPC_MONAD_MAINNET = "https://rpc4.monad.xyz"
+RPC_GNOSIS = "https://rpc.gnosischain.com"
+RPC_PULSECHAIN = "https://rpc.pulsechain.com"
+RPC_SCROLL = "https://rpc.scroll.io"
+RPC_SEI_NETWORK = "https://sei.drpc.org"
+RPC_SONEIUM = "https://rpc.soneium.org"
+RPC_SONIC_MAINNET = "https://rpc.soniclabs.com"
+RPC_TAIKO_ALETHIA = "https://rpc.taiko.xyz"
+RPC_TELOS_EVM_MAINNET = "https://telos.drpc.org"
+RPC_UNICHAIN = "https://unichain.drpc.org"
+RPC_XDC_NETWORK = "https://rpc.xdcrpc.com"
