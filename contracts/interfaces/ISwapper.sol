@@ -28,29 +28,6 @@ pragma solidity >=0.8.0;
 /// **Reentrancy**: The `externalLock` modifier blocks external reentrancy but allows self-calls,
 /// which is required for multicall to invoke other Swapper functions.
 interface ISwapper {
-    // --- Structs ---
-
-    /// @notice Parameters for swap-and-action functions (swapAndDeposit, swapAndRepay).
-    /// @param tokenOut The token received from the swap — used for post-swap vault interactions.
-    /// @param vault The Euler vault address for deposit and/or repay operations.
-    /// @param account The account that receives vault shares (deposit) or whose debt is repaid.
-    ///        Also used for `debtOf()` queries in swapAndRepay.
-    /// @param targetDebt The desired debt level after repay. Set to 0 to repay ALL debt.
-    ///        Any non-zero value is treated as the target — the contract computes `currentDebt - targetDebt`
-    ///        as the repay amount. Ignored by swapAndDeposit.
-    /// @param value Native currency amount to forward to the swap target (0 for ERC20-only swaps).
-    ///        Drawn from the contract's native balance, not msg.value.
-    /// @param data ABI-encoded swap instruction: `abi.encode(address target, bytes callData)`.
-    ///        The Swapper decodes this and executes `target.call{value: value}(callData)`.
-    struct SwapParams {
-        address tokenOut;
-        address vault;
-        address account;
-        uint256 targetDebt;
-        uint256 value;
-        bytes data;
-    }
-
     // --- Errors ---
 
     /// @notice Thrown when an external caller attempts to enter while the reentrancy lock is held.
@@ -66,16 +43,12 @@ interface ISwapper {
     /// Applies to: deposit, repay, repayAndDeposit, sweep, sweepNative.
     error Swapper_InsufficientBalance();
 
-    /// @notice Thrown when `targetDebt` exceeds the account's current debt in swapAndRepay.
-    /// This means the caller is requesting a debt level higher than what currently exists.
-    error Swapper_TargetDebt();
-
     /// @notice Thrown when a native currency transfer to a recipient fails (recipient rejected or out of gas).
     /// Applies to: sweepNative.
     error Swapper_NativeTransferFailed();
 
     // ==========================
-    // Core Swap Functions
+    // Core Swap Function
     // ==========================
 
     /// @notice Execute an arbitrary swap with no post-processing.
@@ -95,36 +68,6 @@ interface ISwapper {
     /// @param data ABI-encoded swap instruction: `abi.encode(address target, bytes callData)`.
     function swapSimple(uint256 value, bytes calldata data) external payable;
 
-    /// @notice Execute a swap then deposit the full output token balance into an Euler vault.
-    /// @dev After the swap, deposits the contract's entire `tokenOut` balance into `params.vault`
-    /// on behalf of `params.account`. If the post-swap balance is zero, the deposit is skipped (no revert).
-    ///
-    /// The caller must approve both:
-    /// 1. The swap target to spend the input token: `approve(tokenIn, router)`
-    /// 2. The vault to spend the output token: `approve(tokenOut, vault)`
-    ///
-    /// The `targetDebt` field in params is ignored by this function.
-    ///
-    /// @param params Swap parameters. See `SwapParams` for field descriptions.
-    function swapAndDeposit(SwapParams memory params) external payable;
-
-    /// @notice Execute a swap, repay debt, and deposit any remainder into the same vault.
-    /// @dev Resolves the repay amount before the swap:
-    /// - If `targetDebt == 0`: repays ALL debt (uses `type(uint256).max` internally).
-    /// - If `targetDebt > 0`: queries `vault.debtOf(account)` and repays `currentDebt - targetDebt`.
-    ///   Reverts with `Swapper_TargetDebt` if `targetDebt > currentDebt`.
-    ///
-    /// After the swap, repays the computed amount (capped to the available balance), then deposits
-    /// any remaining `tokenOut` balance into the same vault. This is useful for swap-and-repay flows
-    /// where the swap output might exceed the debt — the surplus is automatically deposited.
-    ///
-    /// The caller must approve both:
-    /// 1. The swap target to spend the input token: `approve(tokenIn, router)`
-    /// 2. The vault to spend the output token: `approve(tokenOut, vault)`
-    ///
-    /// @param params Swap parameters. See `SwapParams` for field descriptions.
-    function swapAndRepay(SwapParams memory params) external payable;
-
     // ==========================
     // Approval
     // ==========================
@@ -137,15 +80,15 @@ interface ISwapper {
     /// allowance to 0 first), it automatically resets to 0 and retries.
     ///
     /// **This must be called before any operation where an external contract pulls tokens from the Swapper:**
-    /// - Before `swapSimple` / `swapAndDeposit` / `swapAndRepay`: approve the DEX router to spend tokenIn.
+    /// - Before `swapSimple`: approve the DEX router to spend tokenIn.
     /// - Before `deposit` / `repay` / `repayAndDeposit`: approve the vault to spend the token.
-    /// - Before `swapAndDeposit` / `swapAndRepay`: approve BOTH the router (tokenIn) and vault (tokenOut).
     ///
     /// Typical usage in multicall:
     /// ```
     /// calls[0] = abi.encodeCall(ISwapper.approve, (tokenIn, router));
     /// calls[1] = abi.encodeCall(ISwapper.approve, (tokenOut, vault));
-    /// calls[2] = abi.encodeCall(ISwapper.swapAndDeposit, (params));
+    /// calls[2] = abi.encodeCall(ISwapper.swapSimple, (0, swapData));
+    /// calls[3] = abi.encodeCall(ISwapper.deposit, (tokenOut, vault, minOut, account));
     /// ```
     ///
     /// @param token The ERC20 token to approve.
@@ -213,8 +156,10 @@ interface ISwapper {
     /// @dev Queries `token.balanceOf(address(this))` and repays up to `repayAmount` of debt for `account`.
     /// The vault must have been pre-approved via `approve(token, vault)`.
     ///
-    /// If `repayAmount > balance`, it is silently capped to the available balance (partial repay).
-    /// Use `type(uint256).max` to repay all debt (the vault resolves the actual amount).
+    /// The repay amount is capped to the minimum of the available balance and the outstanding debt
+    /// (queried via `vault.debtOf(account)`). This prevents vault-level reverts when the caller
+    /// overestimates the repay amount. Use `type(uint256).max` to repay all debt — it is passed
+    /// through to the vault which resolves it to the exact outstanding amount.
     ///
     /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
     ///

@@ -13,8 +13,6 @@ Reference for all composable flows supported by Payments + Swapper + EVC batchin
 **Swapper** (untrusted, composable via multicall):
 - `approve(token, spender)` — max-approve with cache (must precede any pull-based operation)
 - `swapSimple(value, data)` — execute swap, leave output in contract
-- `swapAndDeposit(params)` — swap + deposit full output to vault
-- `swapAndRepay(params)` — swap + repay debt + deposit remainder
 - `deposit(token, vault, amountMin, account)` — deposit full balance to vault
 - `repay(token, vault, repayAmount, amountMin, account)` — repay debt
 - `repayAndDeposit(token, vault, repayAmount, amountMin, account)` — repay + deposit remainder
@@ -50,7 +48,8 @@ items[0] = Payments.transfer(tokenIn, swapper, amount);
 items[1] = Swapper.multicall([
     approve(tokenIn, router),
     approve(tokenOut, vault),
-    swapAndDeposit({tokenOut, vault, account, 0, 0, data})
+    swapSimple(0, data),
+    deposit(tokenOut, vault, minOut, account)
 ]);
 ```
 
@@ -60,11 +59,12 @@ items[1] = Swapper.multicall([
 // EVC batch
 items[0] = Swapper.multicall{value: X}([
     approve(tokenOut, vault),
-    swapAndDeposit({tokenOut, vault, account, 0, X, data})
+    swapSimple(X, data),
+    deposit(tokenOut, vault, minOut, account)
 ]);
 ```
 
-No tokenIn approval needed for native. The `value` field in SwapParams forwards native to the DEX.
+No tokenIn approval needed for native. The `value` parameter forwards native currency to the DEX.
 
 ---
 
@@ -80,7 +80,8 @@ items[0] = Payments.transfer(tokenIn, swapper, amount);
 items[1] = Swapper.multicall([
     approve(tokenIn, router),
     approve(debtToken, debtVault),
-    swapAndRepay({debtToken, debtVault, account, targetDebt, 0, data})
+    swapSimple(0, data),
+    repayAndDeposit(debtToken, debtVault, type(uint256).max, minOut, account)
 ]);
 ```
 
@@ -90,11 +91,12 @@ items[1] = Swapper.multicall([
 // EVC batch
 items[0] = Swapper.multicall{value: X}([
     approve(debtToken, debtVault),
-    swapAndRepay({debtToken, debtVault, account, targetDebt, X, data})
+    swapSimple(X, data),
+    repayAndDeposit(debtToken, debtVault, type(uint256).max, minOut, account)
 ]);
 ```
 
-Set `targetDebt = 0` to repay all debt. Any non-zero value is treated as the desired debt level — the contract computes `currentDebt - targetDebt` as the repay amount.
+Use `type(uint256).max` as `repayAmount` to repay all debt. Any specific value repays exactly that amount (capped to balance and debt). Surplus after repay is automatically deposited.
 
 ---
 
@@ -176,7 +178,8 @@ items[0] = debtVault.borrow(amount, swapper);
 items[1] = Swapper.multicall([
     approve(debtToken, router),
     approve(collateralToken, collateralVault),
-    swapAndDeposit({collateralToken, collateralVault, account, 0, 0, data})
+    swapSimple(0, data),
+    deposit(collateralToken, collateralVault, minOut, account)
 ]);
 ```
 
@@ -188,7 +191,8 @@ items[0] = collateralVault.withdraw(amount, swapper, account);
 items[1] = Swapper.multicall([
     approve(collateralToken, router),
     approve(debtToken, debtVault),
-    swapAndRepay({debtToken, debtVault, account, targetDebt, 0, data})
+    swapSimple(0, data),
+    repayAndDeposit(debtToken, debtVault, type(uint256).max, minOut, account)
 ]);
 ```
 
@@ -211,11 +215,12 @@ items[1] = debtVault.borrow(borrowAmount, swapper);
 items[2] = Swapper.multicall([
     approve(debtToken, router),
     approve(collateralToken, collateralVault),
-    swapAndDeposit({collateralToken, collateralVault, account, 0, 0, data})
+    swapSimple(0, data),
+    deposit(collateralToken, collateralVault, minOut, account)
 ]);
 ```
 
-After steps 0+1, the Swapper holds `payAmount + borrowAmount` of debtToken. swapAndDeposit swaps ALL of it to collateralToken and deposits the full balance.
+After steps 0+1, the Swapper holds `payAmount + borrowAmount` of debtToken. The swap converts ALL of it to collateralToken and deposit picks up the full balance.
 
 **With native (debt = wrapped native, user pays native):**
 
@@ -226,7 +231,8 @@ items[1] = debtVault.borrow(borrowAmount, swapper);
 items[2] = Swapper.multicall([
     approve(WETH, router),
     approve(collateralToken, collateralVault),
-    swapAndDeposit({collateralToken, collateralVault, account, 0, 0, data})
+    swapSimple(0, data),
+    deposit(collateralToken, collateralVault, minOut, account)
 ]);
 ```
 
@@ -268,13 +274,13 @@ items[2] = Swapper.multicall([
 
 | Scenario | Native in | Native out | Key functions |
 |---|---|---|---|
-| Swap and deposit | Yes (via `value`) | N/A | swapAndDeposit or swapSimple + deposit |
-| Swap and repay | Yes (via `value`) | N/A | swapAndRepay |
+| Swap and deposit | Yes (via `value`) | N/A | swapSimple + deposit |
+| Swap and repay | Yes (via `value`) | N/A | swapSimple + repayAndDeposit |
 | Withdraw and swap | N/A | Yes (unwrap + sweepNative) | swapSimple + sweep/sweepNative |
 | Borrow and swap | N/A | Yes (unwrap + sweepNative) | swapSimple + sweep/sweepNative |
-| Leverage up | Yes (wrapAndTransfer) | N/A | borrow + swapAndDeposit |
-| Deleverage | N/A | Yes (unwrap + sweepNative) | withdraw + swapAndRepay |
-| Zap (pay with debt) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapAndDeposit |
+| Leverage up | Yes (wrapAndTransfer) | N/A | borrow + swapSimple + deposit |
+| Deleverage | N/A | Yes (unwrap + sweepNative) | withdraw + swapSimple + repayAndDeposit |
+| Zap (pay with debt) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapSimple + deposit |
 | Zap (pay with collateral) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapSimple + deposit |
 
 All scenarios are composable from existing Payments + Swapper + EVC batch primitives with no code changes required.

@@ -90,142 +90,6 @@ contract SwapperTest is Test {
     }
 
     // ==========================
-    // swapAndDeposit tests
-    // ==========================
-
-    function test_swapAndDeposit_basic() public {
-        uint256 amountIn = 100e18;
-        _fundSwapperWithTokenA(amountIn);
-        _approveSwapAndVault();
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: 0,
-            value: 0,
-            data: _makeSwapData(amountIn)
-        });
-
-        swapper.swapAndDeposit(params);
-
-        assertEq(vault.deposits(user), 100e18);
-        assertEq(tokenB.balanceOf(address(swapper)), 0);
-    }
-
-    function test_swapAndDeposit_noDepositWhenZeroOutput() public {
-        MockSwapTarget zeroTarget = new MockSwapTarget(tokenA, tokenB, 0);
-        uint256 amountIn = 100e18;
-        _fundSwapperWithTokenA(amountIn);
-        swapper.approve(address(tokenA), address(zeroTarget));
-
-        bytes memory payload = abi.encodeCall(MockSwapTarget.swap, (amountIn));
-        bytes memory data = abi.encode(address(zeroTarget), payload);
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: 0,
-            value: 0,
-            data: data
-        });
-
-        swapper.swapAndDeposit(params);
-
-        assertEq(vault.deposits(user), 0);
-    }
-
-    // ==========================
-    // swapAndRepay tests
-    // ==========================
-
-    function test_swapAndRepay_repayAll() public {
-        uint256 amountIn = 100e18;
-        _fundSwapperWithTokenA(amountIn);
-        _approveSwapAndVault();
-        vault.setDebt(user, 80e18);
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: 0,
-            value: 0,
-            data: _makeSwapData(amountIn)
-        });
-
-        swapper.swapAndRepay(params);
-
-        assertEq(vault.debtOf(user), 0);
-        assertEq(vault.deposits(user), 20e18);
-        assertEq(tokenB.balanceOf(address(swapper)), 0);
-    }
-
-    function test_swapAndRepay_targetDebt() public {
-        uint256 amountIn = 100e18;
-        uint256 targetDebt = 30e18;
-        _fundSwapperWithTokenA(amountIn);
-        _approveSwapAndVault();
-        vault.setDebt(user, 80e18);
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: targetDebt,
-            value: 0,
-            data: _makeSwapData(amountIn)
-        });
-
-        swapper.swapAndRepay(params);
-
-        assertEq(vault.debtOf(user), targetDebt);
-        assertEq(vault.deposits(user), 50e18);
-    }
-
-    function test_swapAndRepay_revertsIfTargetDebtExceedsDebt() public {
-        uint256 amountIn = 100e18;
-        uint256 initialDebt = 50e18;
-        _fundSwapperWithTokenA(amountIn);
-        _approveSwapAndVault();
-        vault.setDebt(user, initialDebt);
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: initialDebt + 1,
-            value: 0,
-            data: _makeSwapData(amountIn)
-        });
-
-        vm.expectRevert(ISwapper.Swapper_TargetDebt.selector);
-        swapper.swapAndRepay(params);
-    }
-
-    function test_swapAndRepay_capsRepayToBalance() public {
-        uint256 amountIn = 50e18;
-        _fundSwapperWithTokenA(amountIn);
-        _approveSwapAndVault();
-        vault.setDebt(user, 100e18);
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: 0,
-            value: 0,
-            data: _makeSwapData(amountIn)
-        });
-
-        swapper.swapAndRepay(params);
-
-        assertEq(vault.debtOf(user), 50e18);
-        assertEq(vault.deposits(user), 0);
-    }
-
-    // ==========================
     // deposit tests
     // ==========================
 
@@ -281,6 +145,31 @@ contract SwapperTest is Test {
         swapper.repay(address(tokenB), address(vault), 80e18, 0, user);
 
         assertEq(vault.debtOf(user), 50e18);
+    }
+
+    function test_repay_capsToDebt() public {
+        _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
+        vault.setDebt(user, 30e18);
+
+        // repayAmount (80) > debt (30) — capped to debt, no revert
+        swapper.repay(address(tokenB), address(vault), 80e18, 0, user);
+
+        assertEq(vault.debtOf(user), 0);
+        // 70 tokens remain in swapper (100 - 30)
+        assertEq(tokenB.balanceOf(address(swapper)), 70e18);
+    }
+
+    function test_repayAndDeposit_capsToDebt() public {
+        _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
+        vault.setDebt(user, 30e18);
+
+        // repayAmount (80) > debt (30) — capped to debt, remainder deposited
+        swapper.repayAndDeposit(address(tokenB), address(vault), 80e18, 0, user);
+
+        assertEq(vault.debtOf(user), 0);
+        assertEq(vault.deposits(user), 70e18);
     }
 
     function test_repay_revertsIfBelowMin() public {
@@ -627,27 +516,6 @@ contract SwapperTest is Test {
 
         assertEq(tokenB.balanceOf(address(swapper)), 1 ether);
         assertEq(address(swapper).balance, 0);
-    }
-
-    function test_swapAndDeposit_native() public {
-        MockSwapTargetETH ethTarget = new MockSwapTargetETH(tokenB, 1e18);
-        bytes memory payload = abi.encodeCall(MockSwapTargetETH.swap, ());
-        bytes memory data = abi.encode(address(ethTarget), payload);
-        swapper.approve(address(tokenB), address(vault));
-
-        ISwapper.SwapParams memory params = ISwapper.SwapParams({
-            tokenOut: address(tokenB),
-            vault: address(vault),
-            account: user,
-            targetDebt: 0,
-            value: 1 ether,
-            data: data
-        });
-
-        swapper.swapAndDeposit{value: 1 ether}(params);
-
-        assertEq(vault.deposits(user), 1 ether);
-        assertEq(tokenB.balanceOf(address(swapper)), 0);
     }
 
     // ==========================

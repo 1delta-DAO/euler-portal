@@ -73,15 +73,11 @@ swapper.multicall(calls);
 
 The approval cache persists across transactions — once a token+spender pair is approved, future multicalls can omit that `approve()` step. The cache uses USDT-safe approve-with-retry (resets to 0 first if needed).
 
-### Swap Functions
+### Swap Function
 
-Three variants covering different post-swap flows:
+- **`swapSimple(value, data)`** — Execute a swap, nothing else. Output tokens stay in the contract for handling via subsequent `multicall` steps (deposit, repay, sweep, etc.) or an external batch step. `value` is the native currency amount forwarded to the swap target (0 for ERC20 swaps).
 
-- **`swapSimple(value, data)`** — Execute a swap, nothing else. Output tokens stay in the contract for manual handling via `multicall` or an external batch step. `value` is the native currency amount forwarded to the swap target (0 for ERC20 swaps).
-- **`swapAndDeposit(params)`** — Swap, then deposit the entire output token balance into an Euler vault for a given account.
-- **`swapAndRepay(params)`** — Swap, then repay debt on an Euler vault (with target debt resolution), then deposit the remainder.
-
-For `swapAndRepay`, set `targetDebt = 0` to repay all debt. Any non-zero value is treated as the desired debt level after repay — the contract queries `vault.debtOf(account)` and repays the difference.
+All post-swap actions (deposit, repay, sweep) are composed via `multicall`. This keeps `swapSimple` minimal and lets integrators build any flow from the same primitives.
 
 ### Native Currency Support
 
@@ -172,10 +168,11 @@ The two contracts are designed to work together inside EVC batches. A typical sw
 
 ```solidity
 // Build a multicall that approves, swaps, and deposits
-bytes[] memory calls = new bytes[](3);
+bytes[] memory calls = new bytes[](4);
 calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
 calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
-calls[2] = abi.encodeCall(Swapper.swapAndDeposit, (swapParams));
+calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
+calls[3] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWeth, user));
 
 IEVC.BatchItem[] memory items = new IEVC.BatchItem[](2);
 

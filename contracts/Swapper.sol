@@ -44,7 +44,7 @@ contract Swapper is ISwapper {
     }
 
     // ==========================
-    // Core Swap Functions
+    // Core Swap Function
     // ==========================
 
     /// @notice Execute an arbitrary swap with no post-processing.
@@ -55,38 +55,6 @@ contract Swapper is ISwapper {
     /// @param data ABI-encoded tuple: (address target, bytes callData).
     function swapSimple(uint256 value, bytes calldata data) public payable externalLock {
         _swapGeneric(value, data);
-    }
-
-    /// @notice Execute a swap then deposit the full output balance to a vault.
-    /// @param params Swap parameters. The `targetDebt` field is ignored.
-    function swapAndDeposit(SwapParams memory params) public payable externalLock {
-        _swapGeneric(params.value, params.data);
-
-        uint256 balance = IERC20(params.tokenOut).balanceOf(address(this));
-        if (balance > 0) {
-            IVault(params.vault).deposit(balance, params.account);
-        }
-    }
-
-    /// @notice Execute a swap then repay debt and deposit the remainder to a vault.
-    /// @dev If `targetDebt` is 0, repays all debt. Otherwise repays `currentDebt - targetDebt`.
-    /// @param params Swap parameters.
-    function swapAndRepay(SwapParams memory params) public payable externalLock {
-        // Resolve repay amount from target debt
-        uint256 repayAmount;
-        if (params.targetDebt == 0) {
-            repayAmount = type(uint256).max;
-        } else {
-            uint256 debt = IVault(params.vault).debtOf(params.account);
-            if (params.targetDebt > debt) revert Swapper_TargetDebt();
-            unchecked {
-                repayAmount = debt - params.targetDebt;
-            }
-        }
-
-        _swapGeneric(params.value, params.data);
-
-        _repayAndDeposit(params.tokenOut, params.vault, repayAmount, params.account);
     }
 
     // ==========================
@@ -176,7 +144,7 @@ contract Swapper is ISwapper {
         if (balance < amountMin) revert Swapper_InsufficientBalance();
         if (balance == 0) return;
 
-        repayAmount = _capRepayToBalance(repayAmount, balance);
+        repayAmount = _capRepay(repayAmount, balance, IVault(vault).debtOf(account));
         IVault(vault).repay(repayAmount, account);
     }
 
@@ -249,7 +217,7 @@ contract Swapper is ISwapper {
     /// @dev Repay debt then deposit any remaining balance into the same vault.
     function _repayAndDeposit(address token, address vault, uint256 repayAmount, address account) internal {
         uint256 balance = IERC20(token).balanceOf(address(this));
-        repayAmount = _capRepayToBalance(repayAmount, balance);
+        repayAmount = _capRepay(repayAmount, balance, IVault(vault).debtOf(account));
 
         repayAmount = IVault(vault).repay(repayAmount, account);
 
@@ -258,11 +226,12 @@ contract Swapper is ISwapper {
         }
     }
 
-    /// @dev Cap repay amount to the available balance.
-    function _capRepayToBalance(uint256 repayAmount, uint256 balance) internal pure returns (uint256) {
-        if (repayAmount != type(uint256).max && repayAmount > balance) {
-            repayAmount = balance;
-        }
+    /// @dev Cap repay amount to the minimum of the available balance and the outstanding debt.
+    /// Passes through type(uint256).max unchanged — the vault resolves it to the full debt.
+    function _capRepay(uint256 repayAmount, uint256 balance, uint256 debt) internal pure returns (uint256) {
+        if (repayAmount == type(uint256).max) return repayAmount;
+        if (repayAmount > debt) repayAmount = debt;
+        if (repayAmount > balance) repayAmount = balance;
         return repayAmount;
     }
 
