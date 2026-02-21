@@ -4,191 +4,16 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import {Swapper} from "../contracts/Swapper.sol";
-import {IERC20} from "../contracts/interfaces/IERC20.sol";
-import {IVault} from "../contracts/interfaces/IVault.sol";
 import {SafeERC20Lib} from "../contracts/lib/SafeERC20Lib.sol";
 
-// --- Mock Contracts ---
-
-contract MockERC20 {
-    string public name = "Mock Token";
-    string public symbol = "MOCK";
-    uint8 public decimals = 18;
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
-
-/// @dev USDT-style token that requires allowance to be 0 before setting a new value
-contract MockERC20RequiresZeroAllowance {
-    string public name = "USDT Mock";
-    string public symbol = "USDTM";
-    uint8 public decimals = 6;
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        require(amount == 0 || allowance[msg.sender][spender] == 0, "reset allowance first");
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
-
-/// @dev Mock swap target: takes tokenIn from caller, mints tokenOut to caller
-contract MockSwapTarget {
-    MockERC20 public tokenIn;
-    MockERC20 public tokenOut;
-    uint256 public rate; // tokenOut per tokenIn (1:1 = 1e18)
-
-    constructor(MockERC20 _tokenIn, MockERC20 _tokenOut, uint256 _rate) {
-        tokenIn = _tokenIn;
-        tokenOut = _tokenOut;
-        rate = _rate;
-    }
-
-    function swap(uint256 amountIn) external {
-        tokenIn.transferFrom(msg.sender, address(this), amountIn);
-        uint256 amountOut = amountIn * rate / 1e18;
-        tokenOut.mint(msg.sender, amountOut);
-    }
-}
-
-/// @dev Mock swap target that always reverts
-contract MockSwapTargetReverting {
-    function swap(uint256) external pure {
-        revert("swap failed");
-    }
-}
-
-/// @dev Mock vault implementing deposit, repay, debtOf
-contract MockVault {
-    MockERC20 public asset;
-
-    mapping(address => uint256) public deposits;
-    mapping(address => uint256) public debts;
-
-    constructor(MockERC20 _asset) {
-        asset = _asset;
-    }
-
-    function setDebt(address account, uint256 amount) external {
-        debts[account] = amount;
-    }
-
-    function debtOf(address account) external view returns (uint256) {
-        return debts[account];
-    }
-
-    function deposit(uint256 amount, address receiver) external returns (uint256) {
-        if (amount == type(uint256).max) {
-            amount = IERC20(address(asset)).balanceOf(msg.sender);
-        }
-        asset.transferFrom(msg.sender, address(this), amount);
-        deposits[receiver] += amount;
-        return amount;
-    }
-
-    function repay(uint256 amount, address account) external returns (uint256) {
-        uint256 debt = debts[account];
-        if (amount > debt) amount = debt;
-
-        uint256 balance = IERC20(address(asset)).balanceOf(msg.sender);
-        if (amount > balance) amount = balance;
-
-        asset.transferFrom(msg.sender, address(this), amount);
-        debts[account] -= amount;
-        return amount;
-    }
-}
-
-/// @dev Malicious token that reenters the swapper
-contract ReentrantToken {
-    Swapper public target;
-    bool public attacking;
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function setTarget(Swapper _target) external {
-        target = _target;
-    }
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-
-        // Attempt reentrant call on sweep
-        if (!attacking && address(target) != address(0)) {
-            attacking = true;
-            target.sweep(address(this), 0, msg.sender);
-        }
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
-
-// --- Test Contract ---
+import {
+    MockERC20,
+    MockERC20RequiresZeroAllowance,
+    MockVault,
+    MockSwapTarget,
+    MockSwapTargetReverting,
+    ReentrantToken
+} from "./utils/Mocks.sol";
 
 contract SwapperTest is Test {
     Swapper public swapper;
@@ -202,8 +27,8 @@ contract SwapperTest is Test {
 
     function setUp() public {
         swapper = new Swapper();
-        tokenA = new MockERC20();
-        tokenB = new MockERC20();
+        tokenA = new MockERC20("Token A", "TKNA", 18);
+        tokenB = new MockERC20("Token B", "TKNB", 18);
         swapTarget = new MockSwapTarget(tokenA, tokenB, 1e18); // 1:1 rate
         vault = new MockVault(tokenB);
     }
@@ -233,7 +58,6 @@ contract SwapperTest is Test {
 
         swapper.swapSimple(address(tokenA), _makeSwapData(amountIn));
 
-        // tokenB should be in the swapper (no post-processing)
         assertEq(tokenB.balanceOf(address(swapper)), 100e18);
         assertEq(tokenA.balanceOf(address(swapper)), 0);
     }
@@ -244,7 +68,6 @@ contract SwapperTest is Test {
 
         swapper.swapSimple(address(tokenA), _makeSwapData(amountIn));
 
-        // Allowance should be max (minus what was used)
         assertGt(tokenA.allowance(address(swapper), address(swapTarget)), 0);
     }
 
@@ -283,13 +106,11 @@ contract SwapperTest is Test {
 
         swapper.swapAndDeposit(params);
 
-        // tokenB should be deposited in vault for user
         assertEq(vault.deposits(user), 100e18);
         assertEq(tokenB.balanceOf(address(swapper)), 0);
     }
 
     function test_swapAndDeposit_noDepositWhenZeroOutput() public {
-        // Swap target that gives 0 output (rate = 0)
         MockSwapTarget zeroTarget = new MockSwapTarget(tokenA, tokenB, 0);
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
@@ -317,34 +138,30 @@ contract SwapperTest is Test {
 
     function test_swapAndRepay_repayAll() public {
         uint256 amountIn = 100e18;
-        uint256 debt = 80e18;
         _fundSwapperWithTokenA(amountIn);
-        vault.setDebt(user, debt);
+        vault.setDebt(user, 80e18);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
             tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
-            targetDebt: 0, // repay all
+            targetDebt: 0,
             data: _makeSwapData(amountIn)
         });
 
         swapper.swapAndRepay(params);
 
-        // Debt should be fully repaid
         assertEq(vault.debtOf(user), 0);
-        // Remainder (100 - 80 = 20) should be deposited
         assertEq(vault.deposits(user), 20e18);
         assertEq(tokenB.balanceOf(address(swapper)), 0);
     }
 
     function test_swapAndRepay_targetDebt() public {
         uint256 amountIn = 100e18;
-        uint256 initialDebt = 80e18;
         uint256 targetDebt = 30e18;
         _fundSwapperWithTokenA(amountIn);
-        vault.setDebt(user, initialDebt);
+        vault.setDebt(user, 80e18);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
             tokenIn: address(tokenA),
@@ -357,9 +174,7 @@ contract SwapperTest is Test {
 
         swapper.swapAndRepay(params);
 
-        // Debt should be reduced to target: 80 - 50 = 30
         assertEq(vault.debtOf(user), targetDebt);
-        // Remainder (100 - 50 = 50) deposited
         assertEq(vault.deposits(user), 50e18);
     }
 
@@ -383,11 +198,9 @@ contract SwapperTest is Test {
     }
 
     function test_swapAndRepay_capsRepayToBalance() public {
-        // Swap output < debt → repays what's available, nothing left to deposit
         uint256 amountIn = 50e18;
-        uint256 debt = 100e18;
         _fundSwapperWithTokenA(amountIn);
-        vault.setDebt(user, debt);
+        vault.setDebt(user, 100e18);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
             tokenIn: address(tokenA),
@@ -400,7 +213,6 @@ contract SwapperTest is Test {
 
         swapper.swapAndRepay(params);
 
-        // Repaid 50, 50 debt remaining
         assertEq(vault.debtOf(user), 50e18);
         assertEq(vault.deposits(user), 0);
     }
@@ -410,12 +222,11 @@ contract SwapperTest is Test {
     // ==========================
 
     function test_deposit_basic() public {
-        uint256 amount = 100e18;
-        _fundSwapperWithTokenB(amount);
+        _fundSwapperWithTokenB(100e18);
 
         swapper.deposit(address(tokenB), address(vault), 0, user);
 
-        assertEq(vault.deposits(user), amount);
+        assertEq(vault.deposits(user), 100e18);
         assertEq(tokenB.balanceOf(address(swapper)), 0);
     }
 
@@ -427,7 +238,6 @@ contract SwapperTest is Test {
     }
 
     function test_deposit_noOpWhenZeroBalance() public {
-        // amountMin = 0, balance = 0 → no-op (no revert)
         swapper.deposit(address(tokenB), address(vault), 0, user);
         assertEq(vault.deposits(user), 0);
     }
@@ -435,7 +245,6 @@ contract SwapperTest is Test {
     function test_deposit_withSlippageCheck() public {
         _fundSwapperWithTokenB(100e18);
 
-        // Should succeed: balance (100) >= amountMin (99)
         swapper.deposit(address(tokenB), address(vault), 99e18, user);
         assertEq(vault.deposits(user), 100e18);
     }
@@ -445,8 +254,7 @@ contract SwapperTest is Test {
     // ==========================
 
     function test_repay_basic() public {
-        uint256 amount = 100e18;
-        _fundSwapperWithTokenB(amount);
+        _fundSwapperWithTokenB(100e18);
         vault.setDebt(user, 100e18);
 
         swapper.repay(address(tokenB), address(vault), type(uint256).max, 0, user);
@@ -460,7 +268,6 @@ contract SwapperTest is Test {
 
         swapper.repay(address(tokenB), address(vault), 80e18, 0, user);
 
-        // Capped to balance of 50
         assertEq(vault.debtOf(user), 50e18);
     }
 
@@ -474,7 +281,6 @@ contract SwapperTest is Test {
     function test_repay_noOpWhenZeroBalance() public {
         vault.setDebt(user, 100e18);
         swapper.repay(address(tokenB), address(vault), type(uint256).max, 0, user);
-        // Debt unchanged since balance was 0
         assertEq(vault.debtOf(user), 100e18);
     }
 
@@ -505,7 +311,6 @@ contract SwapperTest is Test {
 
         swapper.repayAndDeposit(address(tokenB), address(vault), 70e18, 0, user);
 
-        // Repaid 70, deposited 30
         assertEq(vault.debtOf(user), 130e18);
         assertEq(vault.deposits(user), 30e18);
     }
@@ -574,7 +379,6 @@ contract SwapperTest is Test {
     }
 
     function test_multicall_revertBubblesUp() public {
-        // Second call will fail because there's no tokenB balance
         bytes[] memory calls = new bytes[](2);
         calls[0] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), _makeSwapData(0)));
         calls[1] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 100e18, user));
@@ -584,19 +388,16 @@ contract SwapperTest is Test {
     }
 
     function test_multicall_multiSwapMultiDeposit() public {
-        // Two separate swaps and deposits in one multicall
-        MockERC20 tokenC = new MockERC20();
-        MockSwapTarget swapTarget2 = new MockSwapTarget(tokenA, tokenC, 2e18); // 1:2 rate
+        MockERC20 tokenC = new MockERC20("Token C", "TKNC", 18);
+        MockSwapTarget swapTarget2 = new MockSwapTarget(tokenA, tokenC, 2e18);
         MockVault vault2 = new MockVault(tokenC);
 
         _fundSwapperWithTokenA(200e18);
 
-        bytes memory swapData1 = abi.encode(
-            address(swapTarget), abi.encodeCall(MockSwapTarget.swap, (100e18))
-        );
-        bytes memory swapData2 = abi.encode(
-            address(swapTarget2), abi.encodeCall(MockSwapTarget.swap, (100e18))
-        );
+        bytes memory swapData1 =
+            abi.encode(address(swapTarget), abi.encodeCall(MockSwapTarget.swap, (100e18)));
+        bytes memory swapData2 =
+            abi.encode(address(swapTarget2), abi.encodeCall(MockSwapTarget.swap, (100e18)));
 
         bytes[] memory calls = new bytes[](4);
         calls[0] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), swapData1));
@@ -619,8 +420,6 @@ contract SwapperTest is Test {
         malicious.setTarget(swapper);
         malicious.mint(address(swapper), 100e18);
 
-        // The reentrant call reverts with Swapper_Reentrancy(), which propagates
-        // through the token's transfer and gets wrapped by SafeERC20Lib as E_TransferFailed()
         vm.expectRevert(SafeERC20Lib.E_TransferFailed.selector);
         swapper.sweep(address(malicious), 0, receiver);
     }
@@ -631,22 +430,8 @@ contract SwapperTest is Test {
 
     function test_approval_usdtStyleToken() public {
         MockERC20RequiresZeroAllowance usdtToken = new MockERC20RequiresZeroAllowance();
-
-        // Create a swap target that uses the USDT token as input
-        // We need a custom target for this since MockSwapTarget uses MockERC20
         usdtToken.mint(address(swapper), 100e6);
 
-        // First swap sets allowance (works)
-        // We'll test that the approve-with-retry works by doing two swaps
-        // The second swap should handle the non-zero allowance correctly
-
-        // Simple test: just verify the approval works at all
-        // The _setMaxAllowance will be called with the USDT token
-        // which requires 0 allowance before setting a new value
-        // Our retry logic handles this
-
-        // Use swapSimple with a target that just checks approval
-        // For simplicity, test the sweep function with a USDT-style token
         swapper.sweep(address(usdtToken), 0, receiver);
         assertEq(usdtToken.balanceOf(receiver), 100e6);
     }

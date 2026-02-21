@@ -7,166 +7,8 @@ import {Payments} from "../contracts/Payments.sol";
 import {EthereumVaultConnector} from "ethereum-vault-connector/EthereumVaultConnector.sol";
 import {IEVC} from "ethereum-vault-connector/interfaces/IEthereumVaultConnector.sol";
 import {IERC20} from "../contracts/interfaces/IERC20.sol";
-import {IPermit2} from "../contracts/interfaces/IPermit2.sol";
 
-// ============ Mock Contracts ============
-
-contract MockERC20 {
-    string public name;
-    string public symbol;
-    uint8 public decimals = 18;
-    uint256 public totalSupply;
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    constructor(string memory _name, string memory _symbol) {
-        name = _name;
-        symbol = _symbol;
-    }
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-        totalSupply += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        if (msg.sender != from) {
-            require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-            allowance[from][msg.sender] -= amount;
-        }
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
-
-/// @dev Returns false on transferFrom (USDT-like behavior)
-contract MockERC20NoReturnValue {
-    uint8 public decimals = 6;
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external {
-        allowance[msg.sender][spender] = amount;
-        // no return value
-    }
-
-    function transfer(address to, uint256 amount) external {
-        require(balanceOf[msg.sender] >= amount);
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        // no return value
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external {
-        require(balanceOf[from] >= amount);
-        if (msg.sender != from) {
-            require(allowance[from][msg.sender] >= amount);
-            allowance[from][msg.sender] -= amount;
-        }
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        // no return value
-    }
-}
-
-contract MockWETH {
-    string public name = "Wrapped Ether";
-    string public symbol = "WETH";
-    uint8 public decimals = 18;
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function deposit() external payable {
-        balanceOf[msg.sender] += msg.value;
-    }
-
-    function withdraw(uint256 amount) external {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        (bool success,) = msg.sender.call{value: amount}("");
-        require(success, "ETH transfer failed");
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        if (msg.sender != from) {
-            require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-            allowance[from][msg.sender] -= amount;
-        }
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    receive() external payable {
-        balanceOf[msg.sender] += msg.value;
-    }
-}
-
-/// @dev Mock Permit2 that implements transferFrom
-contract MockPermit2 {
-    mapping(address => mapping(address => mapping(address => uint160))) public allowance;
-
-    function permit(address owner, IPermit2.PermitSingle memory permitSingle, bytes calldata) external {
-        allowance[permitSingle.details.token][owner][permitSingle.spender] = permitSingle.details.amount;
-    }
-
-    function transferFrom(address from, address to, uint160 amount, address token) external {
-        uint160 currentAllowance = allowance[token][from][msg.sender];
-        require(currentAllowance >= amount, "MockPermit2: insufficient allowance");
-        allowance[token][from][msg.sender] = currentAllowance - amount;
-
-        // Do the actual transfer
-        (bool success,) =
-            token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", from, to, uint256(amount)));
-        require(success, "MockPermit2: transfer failed");
-    }
-
-    function approve(address token, address from, address spender, uint160 amount) external {
-        allowance[token][from][spender] = amount;
-    }
-}
-
-/// @dev ETH receiver that rejects incoming ETH
-contract RejectETH {
-    receive() external payable {
-        revert("no ETH");
-    }
-}
-
-// ============ Tests ============
+import {MockERC20, MockERC20NoReturnValue, MockWETH, MockPermit2, RejectETH} from "./utils/Mocks.sol";
 
 contract PaymentsTest is Test {
     EthereumVaultConnector evc;
@@ -183,13 +25,12 @@ contract PaymentsTest is Test {
         evc = new EthereumVaultConnector();
         permit2Mock = new MockPermit2();
         payments = new Payments(address(evc), address(permit2Mock));
-        token = new MockERC20("Test Token", "TST");
+        token = new MockERC20("Test Token", "TST", 18);
         weth = new MockWETH();
 
         (user, userPk) = makeAddrAndKey("user");
         receiver = makeAddr("receiver");
 
-        // Fund user with tokens
         token.mint(user, 1000e18);
     }
 
@@ -198,26 +39,20 @@ contract PaymentsTest is Test {
     // ==============================
 
     function test_transfer_basic() public {
-        // User approves Payments contract directly
         vm.prank(user);
         token.approve(address(payments), 100e18);
 
-        // Transfer via EVC call
         vm.prank(user);
-        evc.call(
-            address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), receiver, 100e18))
-        );
+        evc.call(address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), receiver, 100e18)));
 
         assertEq(token.balanceOf(receiver), 100e18);
         assertEq(token.balanceOf(user), 900e18);
     }
 
     function test_transfer_directCall() public {
-        // User approves Payments contract
         vm.prank(user);
         token.approve(address(payments), 100e18);
 
-        // Direct call (should route through EVC via callThroughEVC)
         vm.prank(user);
         payments.transfer(address(token), receiver, 100e18);
 
@@ -225,14 +60,11 @@ contract PaymentsTest is Test {
     }
 
     function test_transfer_viaPermit2() public {
-        // User approves Permit2 to spend tokens
         vm.prank(user);
         token.approve(address(permit2Mock), type(uint256).max);
 
-        // Set Permit2 allowance for Payments contract
         permit2Mock.approve(address(token), user, address(payments), type(uint160).max);
 
-        // Transfer should go via Permit2 path
         vm.prank(user);
         payments.transfer(address(token), receiver, 100e18);
 
@@ -245,7 +77,6 @@ contract PaymentsTest is Test {
         vm.prank(user);
         token.approve(address(payments), 200e18);
 
-        // Batch: two transfers atomically
         IEVC.BatchItem[] memory items = new IEVC.BatchItem[](2);
         items[0] = IEVC.BatchItem({
             targetContract: address(payments),
@@ -281,26 +112,22 @@ contract PaymentsTest is Test {
     }
 
     function test_transfer_revertsOnSubAccountReceiver() public {
-        // Register user's owner on EVC by enabling a collateral (this registers the owner prefix)
         vm.prank(user);
         evc.enableCollateral(user, address(payments));
 
-        // Create a sub-account address (XOR user with non-zero account ID)
         address subAccount = address(uint160(user) ^ 1);
 
         vm.prank(user);
         token.approve(address(payments), 100e18);
 
-        // Transfer to sub-account should revert
         vm.prank(user);
         vm.expectRevert(Payments.E_InvalidReceiver.selector);
         payments.transfer(address(token), subAccount, 100e18);
     }
 
     function test_transfer_revertsOnInsufficientApproval() public {
-        // No approval given, no permit2 allowance
         vm.prank(user);
-        vm.expectRevert(); // SafeERC20Lib.E_TransferFromFailed
+        vm.expectRevert();
         payments.transfer(address(token), receiver, 100e18);
     }
 
@@ -322,11 +149,9 @@ contract PaymentsTest is Test {
     // ==============================
 
     function test_transferWithPermit2() public {
-        // User approves Permit2 to spend tokens (for the underlying transferFrom)
         vm.prank(user);
         token.approve(address(permit2Mock), type(uint256).max);
 
-        // Call transferWithPermit2 — the MockPermit2.permit will set the allowance
         vm.prank(user);
         payments.transferWithPermit2(address(token), receiver, 100e18, 0, block.timestamp + 1 hours, "");
 
@@ -354,7 +179,6 @@ contract PaymentsTest is Test {
         payments.wrapAndTransfer{value: 3 ether}(address(weth), receiver, 1 ether);
 
         assertEq(weth.balanceOf(receiver), 1 ether);
-        // User should get 2 ether back (minus gas, approximately)
         assertEq(user.balance, balBefore - 1 ether);
     }
 
@@ -367,12 +191,10 @@ contract PaymentsTest is Test {
     }
 
     function test_unwrapAndTransfer_basic() public {
-        // Give user some WETH
         vm.deal(user, 10 ether);
         vm.prank(user);
         weth.deposit{value: 5 ether}();
 
-        // User approves Payments to pull WETH
         vm.prank(user);
         MockERC20(address(weth)).approve(address(payments), 1 ether);
 
@@ -478,17 +300,13 @@ contract PaymentsTest is Test {
     function test_auth_attackerCannotStealViaDirectCall() public {
         address attacker = makeAddr("attacker");
 
-        // User approves Payments contract to spend their tokens
         vm.prank(user);
         token.approve(address(payments), 1000e18);
 
-        // Attacker calls transfer directly — callThroughEVC routes through EVC,
-        // _msgSender() resolves to attacker (not user), so transferFrom pulls from attacker who has no tokens
         vm.prank(attacker);
-        vm.expectRevert(); // transferFrom fails: attacker has no balance
+        vm.expectRevert();
         payments.transfer(address(token), attacker, 100e18);
 
-        // User's funds are untouched
         assertEq(token.balanceOf(user), 1000e18);
         assertEq(token.balanceOf(attacker), 0);
     }
@@ -496,17 +314,12 @@ contract PaymentsTest is Test {
     function test_auth_attackerCannotStealViaEVCCall() public {
         address attacker = makeAddr("attacker");
 
-        // User approves Payments contract
         vm.prank(user);
         token.approve(address(payments), 1000e18);
 
-        // Attacker tries to call via EVC with onBehalfOfAccount = user
-        // EVC rejects: attacker is not the owner or operator of user's account
         vm.prank(attacker);
-        vm.expectRevert(); // EVC: not authorized
-        evc.call(
-            address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), attacker, 100e18))
-        );
+        vm.expectRevert();
+        evc.call(address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), attacker, 100e18)));
 
         assertEq(token.balanceOf(user), 1000e18);
         assertEq(token.balanceOf(attacker), 0);
@@ -515,11 +328,9 @@ contract PaymentsTest is Test {
     function test_auth_attackerCannotStealViaBatch() public {
         address attacker = makeAddr("attacker");
 
-        // User approves Payments contract
         vm.prank(user);
         token.approve(address(payments), 1000e18);
 
-        // Attacker tries a batch with onBehalfOfAccount = user
         IEVC.BatchItem[] memory items = new IEVC.BatchItem[](1);
         items[0] = IEVC.BatchItem({
             targetContract: address(payments),
@@ -529,7 +340,7 @@ contract PaymentsTest is Test {
         });
 
         vm.prank(attacker);
-        vm.expectRevert(); // EVC: not authorized
+        vm.expectRevert();
         evc.batch(items);
 
         assertEq(token.balanceOf(user), 1000e18);
@@ -542,10 +353,8 @@ contract PaymentsTest is Test {
 
         uint256 receiverBalBefore = attacker.balance;
 
-        // Attacker calls transferNative — even though they send 0 value, they can't drain user's ETH
-        // because msg.value comes from the caller (attacker), not from the authenticated sender
         vm.prank(attacker);
-        vm.expectRevert(Payments.E_InvalidAmount.selector); // msg.value == 0
+        vm.expectRevert(Payments.E_InvalidAmount.selector);
         payments.transferNative(attacker);
 
         assertEq(attacker.balance, receiverBalBefore);
@@ -554,16 +363,14 @@ contract PaymentsTest is Test {
     function test_auth_attackerCannotStealWETHViaUnwrap() public {
         address attacker = makeAddr("attacker");
 
-        // User wraps ETH and approves Payments
         vm.deal(user, 10 ether);
         vm.prank(user);
         weth.deposit{value: 5 ether}();
         vm.prank(user);
         MockERC20(address(weth)).approve(address(payments), 5 ether);
 
-        // Attacker tries unwrapAndTransfer directly — _msgSender() = attacker, who has no WETH
         vm.prank(attacker);
-        vm.expectRevert(); // transferFrom fails: attacker has no WETH balance
+        vm.expectRevert();
         payments.unwrapAndTransfer(address(weth), attacker, 1 ether);
 
         assertEq(weth.balanceOf(user), 5 ether);
@@ -572,46 +379,34 @@ contract PaymentsTest is Test {
     function test_auth_authorizedOperatorCanTransfer() public {
         address operator = makeAddr("operator");
 
-        // User approves Payments contract
         vm.prank(user);
         token.approve(address(payments), 100e18);
 
-        // User authorizes operator on EVC
         vm.prank(user);
         evc.setAccountOperator(user, operator, true);
 
-        // Operator can now call transfer on behalf of user via EVC
         vm.prank(operator);
-        evc.call(
-            address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), receiver, 100e18))
-        );
+        evc.call(address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), receiver, 100e18)));
 
-        // Transfer succeeded — operator legitimately moved user's funds to receiver
         assertEq(token.balanceOf(receiver), 100e18);
         assertEq(token.balanceOf(user), 900e18);
-        // Operator did NOT receive the funds — they went to receiver
         assertEq(token.balanceOf(operator), 0);
     }
 
     function test_auth_revokedOperatorCannotTransfer() public {
         address operator = makeAddr("operator");
 
-        // User approves Payments contract
         vm.prank(user);
         token.approve(address(payments), 100e18);
 
-        // User authorizes then revokes operator
         vm.prank(user);
         evc.setAccountOperator(user, operator, true);
         vm.prank(user);
         evc.setAccountOperator(user, operator, false);
 
-        // Revoked operator can no longer call on behalf of user
         vm.prank(operator);
-        vm.expectRevert(); // EVC: not authorized
-        evc.call(
-            address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), receiver, 100e18))
-        );
+        vm.expectRevert();
+        evc.call(address(payments), user, 0, abi.encodeCall(Payments.transfer, (address(token), receiver, 100e18)));
 
         assertEq(token.balanceOf(user), 1000e18);
     }
@@ -621,17 +416,14 @@ contract PaymentsTest is Test {
         address otherUser = makeAddr("otherUser");
         token.mint(otherUser, 500e18);
 
-        // otherUser approves Payments
         vm.prank(otherUser);
         token.approve(address(payments), 500e18);
 
-        // User authorizes operator, but otherUser does NOT
         vm.prank(user);
         evc.setAccountOperator(user, operator, true);
 
-        // Operator tries to transfer on behalf of otherUser — should fail
         vm.prank(operator);
-        vm.expectRevert(); // EVC: not authorized for otherUser
+        vm.expectRevert();
         evc.call(
             address(payments), otherUser, 0, abi.encodeCall(Payments.transfer, (address(token), operator, 100e18))
         );
