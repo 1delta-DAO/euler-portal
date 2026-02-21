@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import {Swapper} from "../contracts/Swapper.sol";
+import {ISwapper} from "../contracts/interfaces/ISwapper.sol";
 import {SafeERC20Lib} from "../contracts/lib/SafeERC20Lib.sol";
 
 import {
@@ -97,7 +98,7 @@ contract SwapperTest is Test {
         _fundSwapperWithTokenA(amountIn);
         _approveSwapAndVault();
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
@@ -121,7 +122,7 @@ contract SwapperTest is Test {
         bytes memory payload = abi.encodeCall(MockSwapTarget.swap, (amountIn));
         bytes memory data = abi.encode(address(zeroTarget), payload);
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
@@ -145,7 +146,7 @@ contract SwapperTest is Test {
         _approveSwapAndVault();
         vault.setDebt(user, 80e18);
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
@@ -168,7 +169,7 @@ contract SwapperTest is Test {
         _approveSwapAndVault();
         vault.setDebt(user, 80e18);
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
@@ -190,7 +191,7 @@ contract SwapperTest is Test {
         _approveSwapAndVault();
         vault.setDebt(user, initialDebt);
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
@@ -199,7 +200,7 @@ contract SwapperTest is Test {
             data: _makeSwapData(amountIn)
         });
 
-        vm.expectRevert(Swapper.Swapper_TargetDebt.selector);
+        vm.expectRevert(ISwapper.Swapper_TargetDebt.selector);
         swapper.swapAndRepay(params);
     }
 
@@ -209,7 +210,7 @@ contract SwapperTest is Test {
         _approveSwapAndVault();
         vault.setDebt(user, 100e18);
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
@@ -241,7 +242,7 @@ contract SwapperTest is Test {
     function test_deposit_revertsIfBelowMin() public {
         _fundSwapperWithTokenB(50e18);
 
-        vm.expectRevert(Swapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
         swapper.deposit(address(tokenB), address(vault), 100e18, user);
     }
 
@@ -285,7 +286,7 @@ contract SwapperTest is Test {
     function test_repay_revertsIfBelowMin() public {
         _fundSwapperWithTokenB(10e18);
 
-        vm.expectRevert(Swapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
         swapper.repay(address(tokenB), address(vault), 10e18, 50e18, user);
     }
 
@@ -313,7 +314,7 @@ contract SwapperTest is Test {
     function test_repayAndDeposit_revertsIfBelowMin() public {
         _fundSwapperWithTokenB(10e18);
 
-        vm.expectRevert(Swapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
         swapper.repayAndDeposit(address(tokenB), address(vault), type(uint256).max, 50e18, user);
     }
 
@@ -344,7 +345,7 @@ contract SwapperTest is Test {
     function test_sweep_revertsIfBelowMin() public {
         _fundSwapperWithTokenA(50e18);
 
-        vm.expectRevert(Swapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
         swapper.sweep(address(tokenA), 100e18, receiver);
     }
 
@@ -596,7 +597,7 @@ contract SwapperTest is Test {
     function test_sweepNative_revertsIfBelowMin() public {
         vm.deal(address(swapper), 0.5 ether);
 
-        vm.expectRevert(Swapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
         swapper.sweepNative(1 ether, receiver);
     }
 
@@ -609,7 +610,7 @@ contract SwapperTest is Test {
         RejectETH rejectETH = new RejectETH();
         vm.deal(address(swapper), 1 ether);
 
-        vm.expectRevert(Swapper.Swapper_NativeTransferFailed.selector);
+        vm.expectRevert(ISwapper.Swapper_NativeTransferFailed.selector);
         swapper.sweepNative(0, address(rejectETH));
     }
 
@@ -634,7 +635,7 @@ contract SwapperTest is Test {
         bytes memory data = abi.encode(address(ethTarget), payload);
         swapper.approve(address(tokenB), address(vault));
 
-        Swapper.SwapParams memory params = Swapper.SwapParams({
+        ISwapper.SwapParams memory params = ISwapper.SwapParams({
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,

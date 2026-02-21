@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import {Payments} from "../contracts/Payments.sol";
+import {IPayments} from "../contracts/interfaces/IPayments.sol";
 import {EthereumVaultConnector} from "ethereum-vault-connector/EthereumVaultConnector.sol";
 import {IEVC} from "ethereum-vault-connector/interfaces/IEthereumVaultConnector.sol";
 import {IERC20} from "../contracts/interfaces/IERC20.sol";
@@ -101,13 +102,13 @@ contract PaymentsTest is Test {
 
     function test_transfer_revertsOnZeroAmount() public {
         vm.prank(user);
-        vm.expectRevert(Payments.E_InvalidAmount.selector);
+        vm.expectRevert(IPayments.E_InvalidAmount.selector);
         payments.transfer(address(token), receiver, 0);
     }
 
     function test_transfer_revertsOnZeroReceiver() public {
         vm.prank(user);
-        vm.expectRevert(Payments.E_InvalidReceiver.selector);
+        vm.expectRevert(IPayments.E_InvalidReceiver.selector);
         payments.transfer(address(token), address(0), 100e18);
     }
 
@@ -121,7 +122,7 @@ contract PaymentsTest is Test {
         token.approve(address(payments), 100e18);
 
         vm.prank(user);
-        vm.expectRevert(Payments.E_InvalidReceiver.selector);
+        vm.expectRevert(IPayments.E_InvalidReceiver.selector);
         payments.transfer(address(token), subAccount, 100e18);
     }
 
@@ -186,7 +187,7 @@ contract PaymentsTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert(Payments.E_InsufficientMsgValue.selector);
+        vm.expectRevert(IPayments.E_InsufficientMsgValue.selector);
         payments.wrapAndTransfer{value: 0.5 ether}(address(weth), receiver, 1 ether);
     }
 
@@ -220,7 +221,7 @@ contract PaymentsTest is Test {
 
     function test_transferNative_revertsOnZeroValue() public {
         vm.prank(user);
-        vm.expectRevert(Payments.E_InvalidAmount.selector);
+        vm.expectRevert(IPayments.E_InvalidAmount.selector);
         payments.transferNative{value: 0}(receiver);
     }
 
@@ -229,7 +230,7 @@ contract PaymentsTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert(Payments.E_NativeTransferFailed.selector);
+        vm.expectRevert(IPayments.E_NativeTransferFailed.selector);
         payments.transferNative{value: 1 ether}(address(rejectETH));
     }
 
@@ -263,7 +264,7 @@ contract PaymentsTest is Test {
         token.approve(address(payments), 100e18);
 
         vm.expectEmit(true, true, true, true);
-        emit Payments.Transfer(address(token), user, receiver, 100e18);
+        emit IPayments.Transfer(address(token), user, receiver, 100e18);
 
         vm.prank(user);
         payments.transfer(address(token), receiver, 100e18);
@@ -273,7 +274,7 @@ contract PaymentsTest is Test {
         vm.deal(user, 10 ether);
 
         vm.expectEmit(true, true, true, true);
-        emit Payments.NativeTransfer(user, receiver, 1 ether);
+        emit IPayments.NativeTransfer(user, receiver, 1 ether);
 
         vm.prank(user);
         payments.transferNative{value: 1 ether}(receiver);
@@ -354,7 +355,7 @@ contract PaymentsTest is Test {
         uint256 receiverBalBefore = attacker.balance;
 
         vm.prank(attacker);
-        vm.expectRevert(Payments.E_InvalidAmount.selector);
+        vm.expectRevert(IPayments.E_InvalidAmount.selector);
         payments.transferNative(attacker);
 
         assertEq(attacker.balance, receiverBalBefore);

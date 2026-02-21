@@ -1,0 +1,280 @@
+# Euler Portal — Supported Operations
+
+Reference for all composable flows supported by Payments + Swapper + EVC batching.
+
+## Primitives
+
+**Payments** (EVC-authenticated):
+- `transfer(token, receiver, amount)` — pull ERC20 from user, send to receiver
+- `wrapAndTransfer(weth, receiver, amount)` — wrap native → WETH, send to receiver
+- `unwrapAndTransfer(weth, receiver, amount)` — pull WETH, unwrap, send native
+- `transferNative(receiver)` — forward `msg.value` as native
+
+**Swapper** (untrusted, composable via multicall):
+- `approve(token, spender)` — max-approve with cache (must precede any pull-based operation)
+- `swapSimple(value, data)` — execute swap, leave output in contract
+- `swapAndDeposit(params)` — swap + deposit full output to vault
+- `swapAndRepay(params)` — swap + repay debt + deposit remainder
+- `deposit(token, vault, amountMin, account)` — deposit full balance to vault
+- `repay(token, vault, repayAmount, amountMin, account)` — repay debt
+- `repayAndDeposit(token, vault, repayAmount, amountMin, account)` — repay + deposit remainder
+- `sweep(token, amountMin, to)` — send full ERC20 balance to recipient
+- `sweepNative(amountMin, to)` — send full native balance to recipient
+- `wrap(wrappedNative)` — wrap native balance → wrapped native
+- `unwrap(wrappedNative, amount)` — unwrap wrapped native → native
+- `multicall(calls)` — compose any of the above in sequence
+
+**Vault** (called directly via EVC batch):
+- `deposit(amount, receiver)` — supply assets
+- `withdraw(amount, receiver, owner)` — withdraw collateral
+- `borrow(amount, receiver)` — borrow assets
+- `repay(amount, receiver)` — repay debt
+
+**Key design points:**
+- Approvals are explicit — compose `approve()` in multicall before operations that need them
+- All balance-based operations use `balanceOf(address(this))`, so pre-existing balances from earlier batch items are naturally included
+- EVC defers account health checks until end of batch, allowing temporarily unhealthy states
+- Native currency uses explicit `value` parameter (not `msg.value`) to prevent double-spend in multicall
+
+---
+
+## 1. Swap and Deposit
+
+Swap any input asset (including native) and deposit the output into any vault.
+
+### ERC20 → ERC20 → vault
+
+```solidity
+// EVC batch
+items[0] = Payments.transfer(tokenIn, swapper, amount);
+items[1] = Swapper.multicall([
+    approve(tokenIn, router),
+    approve(tokenOut, vault),
+    swapAndDeposit({tokenOut, vault, account, 0, 0, data})
+]);
+```
+
+### Native → ERC20 → vault
+
+```solidity
+// EVC batch
+items[0] = Swapper.multicall{value: X}([
+    approve(tokenOut, vault),
+    swapAndDeposit({tokenOut, vault, account, 0, X, data})
+]);
+```
+
+No tokenIn approval needed for native. The `value` field in SwapParams forwards native to the DEX.
+
+---
+
+## 2. Swap and Repay
+
+Swap any input asset (including native) and repay debt on any vault. Remainder is deposited.
+
+### ERC20 → ERC20 → repay
+
+```solidity
+// EVC batch
+items[0] = Payments.transfer(tokenIn, swapper, amount);
+items[1] = Swapper.multicall([
+    approve(tokenIn, router),
+    approve(debtToken, debtVault),
+    swapAndRepay({debtToken, debtVault, account, targetDebt, 0, data})
+]);
+```
+
+### Native → ERC20 → repay
+
+```solidity
+// EVC batch
+items[0] = Swapper.multicall{value: X}([
+    approve(debtToken, debtVault),
+    swapAndRepay({debtToken, debtVault, account, targetDebt, X, data})
+]);
+```
+
+Set `targetDebt = 0` to repay all debt. Any non-zero value is treated as the desired debt level — the contract computes `currentDebt - targetDebt` as the repay amount.
+
+---
+
+## 3. Withdraw and Swap
+
+Withdraw from any vault and swap to any output asset (including native).
+
+### Vault → ERC20
+
+```solidity
+// EVC batch
+items[0] = vault.withdraw(amount, swapper, account);
+items[1] = Swapper.multicall([
+    approve(withdrawnToken, router),
+    swapSimple(0, data),
+    sweep(tokenOut, minOut, user)
+]);
+```
+
+### Vault → native
+
+```solidity
+// EVC batch
+items[0] = vault.withdraw(amount, swapper, account);
+items[1] = Swapper.multicall([
+    approve(withdrawnToken, router),
+    swapSimple(0, data),                          // → wrapped native
+    unwrap(WETH, type(uint256).max),
+    sweepNative(minOut, user)
+]);
+```
+
+The vault's `withdraw` is called directly via EVC batch — the Swapper never invokes it.
+
+---
+
+## 4. Borrow and Swap
+
+Borrow from any vault and swap to any output asset (including native).
+
+### Borrow → ERC20
+
+```solidity
+// EVC batch
+items[0] = debtVault.borrow(amount, swapper);
+items[1] = Swapper.multicall([
+    approve(debtToken, router),
+    swapSimple(0, data),
+    sweep(tokenOut, minOut, user)
+]);
+```
+
+### Borrow → native
+
+```solidity
+// EVC batch
+items[0] = debtVault.borrow(amount, swapper);
+items[1] = Swapper.multicall([
+    approve(debtToken, router),
+    swapSimple(0, data),                          // → wrapped native
+    unwrap(WETH, type(uint256).max),
+    sweepNative(minOut, user)
+]);
+```
+
+EVC deferred status checks allow the borrow to proceed even though collateral may not yet be posted — health is verified at the end of the batch.
+
+---
+
+## 5. Leverage
+
+Combine borrow/withdraw with swap and deposit/repay for leveraged position management.
+
+### Leverage up (borrow → swap → deposit collateral)
+
+```solidity
+// EVC batch
+items[0] = debtVault.borrow(amount, swapper);
+items[1] = Swapper.multicall([
+    approve(debtToken, router),
+    approve(collateralToken, collateralVault),
+    swapAndDeposit({collateralToken, collateralVault, account, 0, 0, data})
+]);
+```
+
+### Deleverage (withdraw collateral → swap → repay debt)
+
+```solidity
+// EVC batch
+items[0] = collateralVault.withdraw(amount, swapper, account);
+items[1] = Swapper.multicall([
+    approve(collateralToken, router),
+    approve(debtToken, debtVault),
+    swapAndRepay({debtToken, debtVault, account, targetDebt, 0, data})
+]);
+```
+
+EVC deferred checks are critical — the account is temporarily unhealthy between borrow and deposit, but the batch is atomic and health is checked only at the end.
+
+---
+
+## 6. Zap — Deposit Margin
+
+Open a leveraged position by depositing margin in either the collateral or debt currency. Supports native currency when either side is wrapped native.
+
+### Case A: User pays with the debt (borrow) currency
+
+The Swapper receives both the user's payment and the borrowed amount of the same token. Swap the entire balance `(payAmount + borrowAmount)` to collateral in one swap.
+
+```solidity
+// EVC batch
+items[0] = Payments.transfer(debtToken, swapper, payAmount);
+items[1] = debtVault.borrow(borrowAmount, swapper);
+items[2] = Swapper.multicall([
+    approve(debtToken, router),
+    approve(collateralToken, collateralVault),
+    swapAndDeposit({collateralToken, collateralVault, account, 0, 0, data})
+]);
+```
+
+After steps 0+1, the Swapper holds `payAmount + borrowAmount` of debtToken. swapAndDeposit swaps ALL of it to collateralToken and deposits the full balance.
+
+**With native (debt = wrapped native, user pays native):**
+
+```solidity
+// EVC batch
+items[0] = Payments.wrapAndTransfer{value: payAmount}(WETH, swapper, payAmount);
+items[1] = debtVault.borrow(borrowAmount, swapper);
+items[2] = Swapper.multicall([
+    approve(WETH, router),
+    approve(collateralToken, collateralVault),
+    swapAndDeposit({collateralToken, collateralVault, account, 0, 0, data})
+]);
+```
+
+### Case B: User pays with the collateral currency
+
+The Swapper receives the user's collateralToken AND the borrowed debtToken. Swap ONLY the debtToken to collateralToken, then deposit the full collateralToken balance (user's original + swap output).
+
+```solidity
+// EVC batch
+items[0] = Payments.transfer(collateralToken, swapper, payAmount);
+items[1] = debtVault.borrow(borrowAmount, swapper);
+items[2] = Swapper.multicall([
+    approve(debtToken, router),
+    approve(collateralToken, collateralVault),
+    swapSimple(0, data),                                         // swap ONLY debtToken → collateralToken
+    deposit(collateralToken, collateralVault, minOut, account)   // deposit FULL balance
+]);
+```
+
+After steps 0+1, the Swapper holds `payAmount` of collateralToken + `borrowAmount` of debtToken. The swap data encodes swapping only the debtToken. After swapSimple, the Swapper holds `payAmount + swapOutput` of collateralToken. `deposit()` picks up the full balance.
+
+**With native (collateral = wrapped native, user pays native):**
+
+```solidity
+// EVC batch
+items[0] = Payments.wrapAndTransfer{value: payAmount}(WETH, swapper, payAmount);
+items[1] = debtVault.borrow(borrowAmount, swapper);
+items[2] = Swapper.multicall([
+    approve(debtToken, router),
+    approve(WETH, collateralVault),
+    swapSimple(0, data),                                         // debtToken → WETH
+    deposit(WETH, collateralVault, minOut, account)
+]);
+```
+
+---
+
+## Summary
+
+| Scenario | Native in | Native out | Key functions |
+|---|---|---|---|
+| Swap and deposit | Yes (via `value`) | N/A | swapAndDeposit or swapSimple + deposit |
+| Swap and repay | Yes (via `value`) | N/A | swapAndRepay |
+| Withdraw and swap | N/A | Yes (unwrap + sweepNative) | swapSimple + sweep/sweepNative |
+| Borrow and swap | N/A | Yes (unwrap + sweepNative) | swapSimple + sweep/sweepNative |
+| Leverage up | Yes (wrapAndTransfer) | N/A | borrow + swapAndDeposit |
+| Deleverage | N/A | Yes (unwrap + sweepNative) | withdraw + swapAndRepay |
+| Zap (pay with debt) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapAndDeposit |
+| Zap (pay with collateral) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapSimple + deposit |
+
+All scenarios are composable from existing Payments + Swapper + EVC batch primitives with no code changes required.

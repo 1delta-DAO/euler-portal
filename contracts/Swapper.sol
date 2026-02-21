@@ -2,6 +2,7 @@
 
 pragma solidity ^0.8.24;
 
+import {ISwapper} from "./interfaces/ISwapper.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
@@ -15,19 +16,8 @@ import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 /// @dev This contract is entirely untrusted — it holds no persistent token balances and needs no authentication.
 /// Tokens are transferred in, processed, and moved out within a single transaction.
 /// The `externalLock` modifier allows self-calls (for multicall) but blocks external reentrancy.
-contract Swapper {
+contract Swapper is ISwapper {
     using SafeERC20Lib for IERC20;
-
-    // --- Structs ---
-
-    struct SwapParams {
-        address tokenOut; // Token bought — used for post-swap vault interactions
-        address vault; // Vault for repay and deposit
-        address account; // Account for debt queries and repay/deposit receiver
-        uint256 targetDebt; // Target debt after repay. 0 = repay all debt.
-        uint256 value; // Native value to forward to swap target (0 for ERC20 swaps)
-        bytes data; // abi.encode(target, callData) for generic swap
-    }
 
     // --- Reentrancy lock ---
 
@@ -52,14 +42,6 @@ contract Swapper {
 
         if (isExternal) reentrancyLock = REENTRANCYLOCK_UNLOCKED;
     }
-
-    // --- Errors ---
-
-    error Swapper_Reentrancy();
-    error Swapper_SwapError(address target, bytes result);
-    error Swapper_InsufficientBalance();
-    error Swapper_TargetDebt();
-    error Swapper_NativeTransferFailed();
 
     // ==========================
     // Core Swap Functions

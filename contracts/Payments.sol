@@ -5,6 +5,7 @@ pragma solidity ^0.8.24;
 import {EVCUtil} from "ethereum-vault-connector/utils/EVCUtil.sol";
 import {IEVC} from "ethereum-vault-connector/interfaces/IEthereumVaultConnector.sol";
 
+import {IPayments} from "./interfaces/IPayments.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
@@ -19,7 +20,7 @@ import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 /// Pulls ERC20 tokens from an authenticated sender and forwards them to a receiver.
 /// Supports ERC-2612 permits, Dai permits, Permit2 signature permits, and WETH wrap/unwrap flows.
 /// Designed to be used in EVC batches for atomic multi-step flows (e.g., transfer + swap + deposit).
-contract Payments is EVCUtil {
+contract Payments is IPayments, EVCUtil {
     using SafeERC20Lib for IERC20;
 
     // --- Immutables ---
@@ -40,20 +41,6 @@ contract Payments is EVCUtil {
         _;
         _reentrancyStatus = _NOT_ENTERED;
     }
-
-    // --- Errors ---
-
-    error E_InvalidReceiver();
-    error E_InvalidAmount();
-    error E_NativeTransferFailed();
-    error E_InsufficientMsgValue();
-
-    // --- Events ---
-
-    event Transfer(address indexed token, address indexed from, address indexed receiver, uint256 amount);
-    event NativeTransfer(address indexed from, address indexed receiver, uint256 amount);
-    event WrapAndTransfer(address indexed weth, address indexed from, address indexed receiver, uint256 amount);
-    event UnwrapAndTransfer(address indexed weth, address indexed from, address indexed receiver, uint256 amount);
 
     // --- Constructor ---
 
