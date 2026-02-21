@@ -44,17 +44,90 @@ All permit calls use `try/catch` so front-running or pre-existing approvals don'
 
 An untrusted helper contract for executing arbitrary token swaps and composable post-swap vault interactions. It holds no persistent state and needs no authentication — tokens are transferred in, processed, and moved out within a single transaction.
 
-The contract uses a **generic handler** pattern: swap calldata is `abi.encode(target, payload)`, where the Swapper approves `tokenIn` to the target address and executes `target.call(payload)`. This means it works with any DEX or aggregator without requiring protocol-specific handler code.
+The contract uses a **generic handler** pattern: swap calldata is `abi.encode(target, payload)`, and the Swapper executes `target.call{value: value}(payload)`. This means it works with any DEX or aggregator without requiring protocol-specific handler code.
+
+### Explicit Approvals
+
+The Swapper does **not** auto-approve tokens. Callers must explicitly compose `approve()` calls as part of their `multicall` sequence before any operation that requires token spending. This keeps the swap path minimal and makes approval flow transparent:
+
+```solidity
+// approve() max-approves a token for a spender and caches the result.
+// Subsequent calls for the same token+spender pair are no-ops (skipped via cache).
+function approve(address token, address spender) public
+```
+
+Typical multicall with approvals:
+
+```solidity
+bytes[] memory calls = new bytes[](4);
+// 1) Approve the swap router to spend tokenIn
+calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
+// 2) Approve the vault to spend tokenOut (for deposit)
+calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
+// 3) Execute the swap
+calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
+// 4) Deposit output into vault
+calls[3] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWethOut, user));
+swapper.multicall(calls);
+```
+
+The approval cache persists across transactions — once a token+spender pair is approved, future multicalls can omit that `approve()` step. The cache uses USDT-safe approve-with-retry (resets to 0 first if needed).
 
 ### Swap Functions
 
 Three variants covering different post-swap flows:
 
-- **`swapSimple(tokenIn, data)`** — Execute a swap, nothing else. Output tokens stay in the contract for manual handling via `multicall` or an external batch step.
+- **`swapSimple(value, data)`** — Execute a swap, nothing else. Output tokens stay in the contract for manual handling via `multicall` or an external batch step. `value` is the native currency amount forwarded to the swap target (0 for ERC20 swaps).
 - **`swapAndDeposit(params)`** — Swap, then deposit the entire output token balance into an Euler vault for a given account.
 - **`swapAndRepay(params)`** — Swap, then repay debt on an Euler vault (with target debt resolution), then deposit the remainder.
 
 For `swapAndRepay`, set `targetDebt = 0` to repay all debt. Any non-zero value is treated as the desired debt level after repay — the contract queries `vault.debtOf(account)` and repays the difference.
+
+### Native Currency Support
+
+The Swapper supports native currency (ETH, BNB, etc.) for omni-chain deployment. Swap functions accept a `value` parameter — the native currency amount forwarded to the swap target. This is drawn from `address(this).balance`, not `msg.value`, to avoid double-spend issues in multicall.
+
+**Utility functions:**
+
+| Function | What it does |
+|---|---|
+| `wrap(wrappedNative)` | Wrap contract's full native balance into wrapped native token (e.g., WETH, WBNB) |
+| `unwrap(wrappedNative, amount)` | Unwrap wrapped native to native currency. `type(uint256).max` = unwrap all |
+| `sweepNative(amountMin, to)` | Send native currency balance to recipient with slippage check |
+
+All three are payable. The contract has a `receive()` fallback to accept native currency.
+
+**Native swap via multicall (direct forwarding):**
+
+```solidity
+bytes[] memory calls = new bytes[](2);
+// Swap native currency -> USDC via DEX router that accepts native
+calls[0] = abi.encodeCall(Swapper.swapSimple, (1 ether, swapData));
+calls[1] = abi.encodeCall(Swapper.deposit, (USDC, usdcVault, minUsdc, user));
+swapper.multicall{value: 1 ether}(calls);
+```
+
+**Native swap via multicall (wrap-first):**
+
+```solidity
+bytes[] memory calls = new bytes[](4);
+calls[0] = abi.encodeCall(Swapper.wrap, (WETH));                           // ETH -> WETH
+calls[1] = abi.encodeCall(Swapper.approve, (WETH, swapRouter));            // Approve router
+calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));              // Swap WETH -> USDC
+calls[3] = abi.encodeCall(Swapper.deposit, (USDC, usdcVault, minUsdc, user));
+swapper.multicall{value: 1 ether}(calls);
+```
+
+**Unwrap flow (token -> native currency):**
+
+```solidity
+bytes[] memory calls = new bytes[](4);
+calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
+calls[1] = abi.encodeCall(Swapper.swapSimple, (0, swapData));              // USDC -> WETH
+calls[2] = abi.encodeCall(Swapper.unwrap, (WETH, type(uint256).max));      // WETH -> native
+calls[3] = abi.encodeCall(Swapper.sweepNative, (minNativeOut, user));
+swapper.multicall(calls);
+```
 
 ### Post-Swap Actions
 
@@ -65,38 +138,30 @@ Standalone functions for vault interactions, each with a **minimum amount that r
 | `deposit(token, vault, amountMin, account)` | Deposit full balance to vault |
 | `repay(token, vault, repayAmount, amountMin, account)` | Repay debt (capped to balance) |
 | `repayAndDeposit(token, vault, repayAmount, amountMin, account)` | Repay, then deposit remainder |
-| `sweep(token, amountMin, to)` | Transfer full balance to recipient |
+| `sweep(token, amountMin, to)` | Transfer full ERC20 balance to recipient |
+| `sweepNative(amountMin, to)` | Transfer full native currency balance to recipient |
 
-All functions revert with `Swapper_InsufficientBalance` if the contract's token balance is below `amountMin`. Pass `amountMin = 0` to skip the check.
+All functions revert with `Swapper_InsufficientBalance` if the contract's balance is below `amountMin`. Pass `amountMin = 0` to skip the check.
 
 ### Multicall
 
-`multicall(bytes[] calls)` executes multiple functions on the Swapper in sequence within a single external call. This enables composing any combination of swaps and post-actions:
-
-```solidity
-// Swap USDC -> WETH, then deposit with slippage check
-bytes[] memory calls = new bytes[](2);
-calls[0] = abi.encodeCall(Swapper.swapSimple, (USDC, swapData));
-calls[1] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWethOut, user));
-swapper.multicall(calls);
-```
-
-Multi-swap, multi-deposit in one transaction:
+`multicall(bytes[] calls)` executes multiple functions on the Swapper in sequence within a single external call. It is `payable` to support native currency flows. This enables composing any combination of approvals, swaps, and post-actions:
 
 ```solidity
 bytes[] memory calls = new bytes[](4);
-calls[0] = abi.encodeCall(Swapper.swapSimple, (USDC, swap1Data));  // USDC -> WETH
-calls[1] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWeth, user));
-calls[2] = abi.encodeCall(Swapper.swapSimple, (USDC, swap2Data));  // USDC -> DAI
-calls[3] = abi.encodeCall(Swapper.deposit, (DAI, daiVault, minDai, user));
+calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
+calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
+calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
+calls[3] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWeth, user));
 swapper.multicall(calls);
 ```
 
 ### Security
 
-- **Untrusted** — No authentication, no stored allowances, no admin. Anyone can call any function.
+- **Untrusted** — No authentication, no admin. Anyone can call any function.
+- **Explicit approvals** — Callers compose `approve()` steps in multicall. Approvals are cached per token+spender pair with USDT-safe retry.
 - **Reentrancy protection** — `externalLock` blocks external reentrancy but allows self-calls (required for `multicall`).
-- **USDT-safe approvals** — Approve-with-retry handles tokens requiring allowance reset to 0.
+- **Native currency safety** — Swap functions use an explicit `value` parameter drawn from `address(this).balance`, not `msg.value`, preventing double-spend in multicall.
 - **No persistent balance** — Tokens only reside in the contract during execution.
 
 ---
@@ -106,6 +171,12 @@ swapper.multicall(calls);
 The two contracts are designed to work together inside EVC batches. A typical swap-and-deposit flow:
 
 ```solidity
+// Build a multicall that approves, swaps, and deposits
+bytes[] memory calls = new bytes[](3);
+calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
+calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
+calls[2] = abi.encodeCall(Swapper.swapAndDeposit, (swapParams));
+
 IEVC.BatchItem[] memory items = new IEVC.BatchItem[](2);
 
 // 1) Pull USDC from user to the swapper (EVC-authenticated)
@@ -116,15 +187,34 @@ items[0] = IEVC.BatchItem({
     data: abi.encodeCall(Payments.transfer, (USDC, address(swapper), usdcAmount))
 });
 
-// 2) Swapper: swap USDC -> WETH and deposit into vault
+// 2) Swapper: approve, swap USDC -> WETH, and deposit into vault
 items[1] = IEVC.BatchItem({
     targetContract: address(swapper),
     onBehalfOfAccount: address(0),
     value: 0,
-    data: abi.encodeCall(Swapper.swapAndDeposit, (swapParams))
+    data: abi.encodeCall(Swapper.multicall, (calls))
 });
 
 evc.batch(items);
+```
+
+**Native currency via EVC batch:**
+
+```solidity
+// Swap native currency -> USDC -> vault
+bytes[] memory calls = new bytes[](2);
+calls[0] = abi.encodeCall(Swapper.swapSimple, (1 ether, swapData));
+calls[1] = abi.encodeCall(Swapper.deposit, (USDC, usdcVault, minUsdc, user));
+
+IEVC.BatchItem[] memory items = new IEVC.BatchItem[](1);
+items[0] = IEVC.BatchItem({
+    targetContract: address(swapper),
+    onBehalfOfAccount: address(0),
+    value: 1 ether,
+    data: abi.encodeCall(Swapper.multicall, (calls))
+});
+
+evc.batch{value: 1 ether}(items);
 ```
 
 ### Direct Deposit via Skim

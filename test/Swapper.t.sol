@@ -10,8 +10,11 @@ import {
     MockERC20,
     MockERC20RequiresZeroAllowance,
     MockVault,
+    MockWETH,
     MockSwapTarget,
+    MockSwapTargetETH,
     MockSwapTargetReverting,
+    RejectETH,
     ReentrantToken
 } from "./utils/Mocks.sol";
 
@@ -48,6 +51,12 @@ contract SwapperTest is Test {
         tokenB.mint(address(swapper), amount);
     }
 
+    /// @dev Approve tokenIn to swapTarget and tokenOut to vault (common setup for swap+vault tests)
+    function _approveSwapAndVault() internal {
+        swapper.approve(address(tokenA), address(swapTarget));
+        swapper.approve(address(tokenB), address(vault));
+    }
+
     // ==========================
     // swapSimple tests
     // ==========================
@@ -55,20 +64,12 @@ contract SwapperTest is Test {
     function test_swapSimple_basic() public {
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
+        swapper.approve(address(tokenA), address(swapTarget));
 
-        swapper.swapSimple(address(tokenA), _makeSwapData(amountIn));
+        swapper.swapSimple(0, _makeSwapData(amountIn));
 
         assertEq(tokenB.balanceOf(address(swapper)), 100e18);
         assertEq(tokenA.balanceOf(address(swapper)), 0);
-    }
-
-    function test_swapSimple_approvesTokenInToTarget() public {
-        uint256 amountIn = 50e18;
-        _fundSwapperWithTokenA(amountIn);
-
-        swapper.swapSimple(address(tokenA), _makeSwapData(amountIn));
-
-        assertGt(tokenA.allowance(address(swapper), address(swapTarget)), 0);
     }
 
     function test_swapSimple_revertsOnFailedSwap() public {
@@ -76,7 +77,7 @@ contract SwapperTest is Test {
         bytes memory data = abi.encode(address(badTarget), abi.encodeCall(MockSwapTargetReverting.swap, (100)));
 
         vm.expectRevert();
-        swapper.swapSimple(address(tokenA), data);
+        swapper.swapSimple(0, data);
     }
 
     function test_swapSimple_revertsOnNoCodeTarget() public {
@@ -84,7 +85,7 @@ contract SwapperTest is Test {
         bytes memory data = abi.encode(noCode, bytes(""));
 
         vm.expectRevert();
-        swapper.swapSimple(address(tokenA), data);
+        swapper.swapSimple(0, data);
     }
 
     // ==========================
@@ -94,13 +95,14 @@ contract SwapperTest is Test {
     function test_swapAndDeposit_basic() public {
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
+        _approveSwapAndVault();
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
-            tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
             targetDebt: 0,
+            value: 0,
             data: _makeSwapData(amountIn)
         });
 
@@ -114,16 +116,17 @@ contract SwapperTest is Test {
         MockSwapTarget zeroTarget = new MockSwapTarget(tokenA, tokenB, 0);
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
+        swapper.approve(address(tokenA), address(zeroTarget));
 
         bytes memory payload = abi.encodeCall(MockSwapTarget.swap, (amountIn));
         bytes memory data = abi.encode(address(zeroTarget), payload);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
-            tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
             targetDebt: 0,
+            value: 0,
             data: data
         });
 
@@ -139,14 +142,15 @@ contract SwapperTest is Test {
     function test_swapAndRepay_repayAll() public {
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
+        _approveSwapAndVault();
         vault.setDebt(user, 80e18);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
-            tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
             targetDebt: 0,
+            value: 0,
             data: _makeSwapData(amountIn)
         });
 
@@ -161,14 +165,15 @@ contract SwapperTest is Test {
         uint256 amountIn = 100e18;
         uint256 targetDebt = 30e18;
         _fundSwapperWithTokenA(amountIn);
+        _approveSwapAndVault();
         vault.setDebt(user, 80e18);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
-            tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
             targetDebt: targetDebt,
+            value: 0,
             data: _makeSwapData(amountIn)
         });
 
@@ -182,14 +187,15 @@ contract SwapperTest is Test {
         uint256 amountIn = 100e18;
         uint256 initialDebt = 50e18;
         _fundSwapperWithTokenA(amountIn);
+        _approveSwapAndVault();
         vault.setDebt(user, initialDebt);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
-            tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
             targetDebt: initialDebt + 1,
+            value: 0,
             data: _makeSwapData(amountIn)
         });
 
@@ -200,14 +206,15 @@ contract SwapperTest is Test {
     function test_swapAndRepay_capsRepayToBalance() public {
         uint256 amountIn = 50e18;
         _fundSwapperWithTokenA(amountIn);
+        _approveSwapAndVault();
         vault.setDebt(user, 100e18);
 
         Swapper.SwapParams memory params = Swapper.SwapParams({
-            tokenIn: address(tokenA),
             tokenOut: address(tokenB),
             vault: address(vault),
             account: user,
             targetDebt: 0,
+            value: 0,
             data: _makeSwapData(amountIn)
         });
 
@@ -223,6 +230,7 @@ contract SwapperTest is Test {
 
     function test_deposit_basic() public {
         _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
 
         swapper.deposit(address(tokenB), address(vault), 0, user);
 
@@ -244,6 +252,7 @@ contract SwapperTest is Test {
 
     function test_deposit_withSlippageCheck() public {
         _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
 
         swapper.deposit(address(tokenB), address(vault), 99e18, user);
         assertEq(vault.deposits(user), 100e18);
@@ -255,6 +264,7 @@ contract SwapperTest is Test {
 
     function test_repay_basic() public {
         _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
         vault.setDebt(user, 100e18);
 
         swapper.repay(address(tokenB), address(vault), type(uint256).max, 0, user);
@@ -264,6 +274,7 @@ contract SwapperTest is Test {
 
     function test_repay_capsToBalance() public {
         _fundSwapperWithTokenB(50e18);
+        swapper.approve(address(tokenB), address(vault));
         vault.setDebt(user, 100e18);
 
         swapper.repay(address(tokenB), address(vault), 80e18, 0, user);
@@ -290,6 +301,7 @@ contract SwapperTest is Test {
 
     function test_repayAndDeposit_basic() public {
         _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
         vault.setDebt(user, 60e18);
 
         swapper.repayAndDeposit(address(tokenB), address(vault), type(uint256).max, 0, user);
@@ -307,6 +319,7 @@ contract SwapperTest is Test {
 
     function test_repayAndDeposit_partialRepay() public {
         _fundSwapperWithTokenB(100e18);
+        swapper.approve(address(tokenB), address(vault));
         vault.setDebt(user, 200e18);
 
         swapper.repayAndDeposit(address(tokenB), address(vault), 70e18, 0, user);
@@ -355,9 +368,11 @@ contract SwapperTest is Test {
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
 
-        bytes[] memory calls = new bytes[](2);
-        calls[0] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), _makeSwapData(amountIn)));
-        calls[1] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 99e18, user));
+        bytes[] memory calls = new bytes[](4);
+        calls[0] = abi.encodeCall(Swapper.approve, (address(tokenA), address(swapTarget)));
+        calls[1] = abi.encodeCall(Swapper.approve, (address(tokenB), address(vault)));
+        calls[2] = abi.encodeCall(Swapper.swapSimple, (0, _makeSwapData(amountIn)));
+        calls[3] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 99e18, user));
 
         swapper.multicall(calls);
 
@@ -369,9 +384,10 @@ contract SwapperTest is Test {
         uint256 amountIn = 100e18;
         _fundSwapperWithTokenA(amountIn);
 
-        bytes[] memory calls = new bytes[](2);
-        calls[0] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), _makeSwapData(amountIn)));
-        calls[1] = abi.encodeCall(Swapper.sweep, (address(tokenB), 99e18, receiver));
+        bytes[] memory calls = new bytes[](3);
+        calls[0] = abi.encodeCall(Swapper.approve, (address(tokenA), address(swapTarget)));
+        calls[1] = abi.encodeCall(Swapper.swapSimple, (0, _makeSwapData(amountIn)));
+        calls[2] = abi.encodeCall(Swapper.sweep, (address(tokenB), 99e18, receiver));
 
         swapper.multicall(calls);
 
@@ -380,7 +396,7 @@ contract SwapperTest is Test {
 
     function test_multicall_revertBubblesUp() public {
         bytes[] memory calls = new bytes[](2);
-        calls[0] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), _makeSwapData(0)));
+        calls[0] = abi.encodeCall(Swapper.swapSimple, (0, _makeSwapData(0)));
         calls[1] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 100e18, user));
 
         vm.expectRevert();
@@ -399,11 +415,15 @@ contract SwapperTest is Test {
         bytes memory swapData2 =
             abi.encode(address(swapTarget2), abi.encodeCall(MockSwapTarget.swap, (100e18)));
 
-        bytes[] memory calls = new bytes[](4);
-        calls[0] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), swapData1));
-        calls[1] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 0, user));
-        calls[2] = abi.encodeCall(Swapper.swapSimple, (address(tokenA), swapData2));
-        calls[3] = abi.encodeCall(Swapper.deposit, (address(tokenC), address(vault2), 0, user));
+        bytes[] memory calls = new bytes[](8);
+        calls[0] = abi.encodeCall(Swapper.approve, (address(tokenA), address(swapTarget)));
+        calls[1] = abi.encodeCall(Swapper.approve, (address(tokenA), address(swapTarget2)));
+        calls[2] = abi.encodeCall(Swapper.approve, (address(tokenB), address(vault)));
+        calls[3] = abi.encodeCall(Swapper.approve, (address(tokenC), address(vault2)));
+        calls[4] = abi.encodeCall(Swapper.swapSimple, (0, swapData1));
+        calls[5] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 0, user));
+        calls[6] = abi.encodeCall(Swapper.swapSimple, (0, swapData2));
+        calls[7] = abi.encodeCall(Swapper.deposit, (address(tokenC), address(vault2), 0, user));
 
         swapper.multicall(calls);
 
@@ -434,5 +454,257 @@ contract SwapperTest is Test {
 
         swapper.sweep(address(usdtToken), 0, receiver);
         assertEq(usdtToken.balanceOf(receiver), 100e6);
+    }
+
+    // ==========================
+    // approve tests
+    // ==========================
+
+    function test_approve_basic() public {
+        swapper.approve(address(tokenA), address(swapTarget));
+
+        assertEq(tokenA.allowance(address(swapper), address(swapTarget)), type(uint256).max);
+    }
+
+    function test_approve_cachedSkipsRedundantCall() public {
+        swapper.approve(address(tokenA), address(swapTarget));
+        assertEq(tokenA.allowance(address(swapper), address(swapTarget)), type(uint256).max);
+
+        // Verify cache by using a USDT-style token that would revert on non-zero-to-non-zero approve
+        MockERC20RequiresZeroAllowance usdtToken = new MockERC20RequiresZeroAllowance();
+        usdtToken.mint(address(swapper), 200e6);
+
+        // First approve works
+        swapper.approve(address(usdtToken), address(vault));
+
+        // Second approve should be a no-op (cached), so it won't hit the USDT revert
+        swapper.approve(address(usdtToken), address(vault));
+    }
+
+    function test_approve_separateSpenderFromRouter() public {
+        address separateRouter = makeAddr("separateRouter");
+        swapper.approve(address(tokenA), separateRouter);
+
+        assertEq(tokenA.allowance(address(swapper), separateRouter), type(uint256).max);
+    }
+
+    function test_approve_usedInMulticall() public {
+        uint256 amountIn = 100e18;
+        _fundSwapperWithTokenA(amountIn);
+
+        bytes[] memory calls = new bytes[](3);
+        calls[0] = abi.encodeCall(Swapper.approve, (address(tokenA), address(swapTarget)));
+        calls[1] = abi.encodeCall(Swapper.swapSimple, (0, _makeSwapData(amountIn)));
+        calls[2] = abi.encodeCall(Swapper.sweep, (address(tokenB), 99e18, receiver));
+
+        swapper.multicall(calls);
+
+        assertEq(tokenB.balanceOf(receiver), 100e18);
+    }
+
+    function test_approve_swapReusesCachedApproval() public {
+        // Pre-approve tokenA to swapTarget
+        swapper.approve(address(tokenA), address(swapTarget));
+
+        uint256 amountIn = 100e18;
+        _fundSwapperWithTokenA(amountIn);
+
+        swapper.swapSimple(0, _makeSwapData(amountIn));
+
+        assertEq(tokenB.balanceOf(address(swapper)), 100e18);
+        assertEq(tokenA.balanceOf(address(swapper)), 0);
+    }
+
+    // ==========================
+    // wrap tests
+    // ==========================
+
+    function test_wrap_basic() public {
+        MockWETH weth = new MockWETH();
+
+        bytes[] memory calls = new bytes[](1);
+        calls[0] = abi.encodeCall(Swapper.wrap, (address(weth)));
+
+        swapper.multicall{value: 1 ether}(calls);
+
+        assertEq(weth.balanceOf(address(swapper)), 1 ether);
+        assertEq(address(swapper).balance, 0);
+    }
+
+    function test_wrap_payable() public {
+        MockWETH weth = new MockWETH();
+
+        swapper.wrap{value: 2 ether}(address(weth));
+
+        assertEq(weth.balanceOf(address(swapper)), 2 ether);
+    }
+
+    function test_wrap_noOpWhenZeroBalance() public {
+        MockWETH weth = new MockWETH();
+
+        swapper.wrap(address(weth));
+        assertEq(weth.balanceOf(address(swapper)), 0);
+    }
+
+    // ==========================
+    // unwrap tests
+    // ==========================
+
+    function test_unwrap_basic() public {
+        MockWETH weth = new MockWETH();
+
+        swapper.wrap{value: 3 ether}(address(weth));
+        swapper.unwrap(address(weth), 1 ether);
+
+        assertEq(weth.balanceOf(address(swapper)), 2 ether);
+        assertEq(address(swapper).balance, 1 ether);
+    }
+
+    function test_unwrap_maxAmount() public {
+        MockWETH weth = new MockWETH();
+
+        swapper.wrap{value: 5 ether}(address(weth));
+        swapper.unwrap(address(weth), type(uint256).max);
+
+        assertEq(weth.balanceOf(address(swapper)), 0);
+        assertEq(address(swapper).balance, 5 ether);
+    }
+
+    function test_unwrap_noOpWhenZero() public {
+        MockWETH weth = new MockWETH();
+
+        swapper.unwrap(address(weth), 0);
+        assertEq(address(swapper).balance, 0);
+    }
+
+    // ==========================
+    // sweepNative tests
+    // ==========================
+
+    function test_sweepNative_basic() public {
+        MockWETH weth = new MockWETH();
+        swapper.wrap{value: 1 ether}(address(weth));
+        swapper.unwrap(address(weth), type(uint256).max);
+
+        uint256 receiverBalBefore = receiver.balance;
+        swapper.sweepNative(0, receiver);
+
+        assertEq(receiver.balance - receiverBalBefore, 1 ether);
+        assertEq(address(swapper).balance, 0);
+    }
+
+    function test_sweepNative_revertsIfBelowMin() public {
+        vm.deal(address(swapper), 0.5 ether);
+
+        vm.expectRevert(Swapper.Swapper_InsufficientBalance.selector);
+        swapper.sweepNative(1 ether, receiver);
+    }
+
+    function test_sweepNative_noOpWhenZeroBalance() public {
+        swapper.sweepNative(0, receiver);
+        // No revert, no transfer
+    }
+
+    function test_sweepNative_revertsOnFailedTransfer() public {
+        RejectETH rejectETH = new RejectETH();
+        vm.deal(address(swapper), 1 ether);
+
+        vm.expectRevert(Swapper.Swapper_NativeTransferFailed.selector);
+        swapper.sweepNative(0, address(rejectETH));
+    }
+
+    // ==========================
+    // Native swap tests
+    // ==========================
+
+    function test_swapSimple_native() public {
+        MockSwapTargetETH ethTarget = new MockSwapTargetETH(tokenB, 1e18); // 1:1 rate
+        bytes memory payload = abi.encodeCall(MockSwapTargetETH.swap, ());
+        bytes memory data = abi.encode(address(ethTarget), payload);
+
+        swapper.swapSimple{value: 1 ether}(1 ether, data);
+
+        assertEq(tokenB.balanceOf(address(swapper)), 1 ether);
+        assertEq(address(swapper).balance, 0);
+    }
+
+    function test_swapAndDeposit_native() public {
+        MockSwapTargetETH ethTarget = new MockSwapTargetETH(tokenB, 1e18);
+        bytes memory payload = abi.encodeCall(MockSwapTargetETH.swap, ());
+        bytes memory data = abi.encode(address(ethTarget), payload);
+        swapper.approve(address(tokenB), address(vault));
+
+        Swapper.SwapParams memory params = Swapper.SwapParams({
+            tokenOut: address(tokenB),
+            vault: address(vault),
+            account: user,
+            targetDebt: 0,
+            value: 1 ether,
+            data: data
+        });
+
+        swapper.swapAndDeposit{value: 1 ether}(params);
+
+        assertEq(vault.deposits(user), 1 ether);
+        assertEq(tokenB.balanceOf(address(swapper)), 0);
+    }
+
+    // ==========================
+    // Multicall native flow tests
+    // ==========================
+
+    function test_multicall_wrapSwapDeposit() public {
+        MockWETH weth = new MockWETH();
+        MockSwapTarget wethSwapTarget = new MockSwapTarget(MockERC20(address(weth)), tokenB, 1e18);
+
+        bytes memory swapPayload = abi.encodeCall(MockSwapTarget.swap, (1 ether));
+        bytes memory swapData = abi.encode(address(wethSwapTarget), swapPayload);
+
+        bytes[] memory calls = new bytes[](5);
+        calls[0] = abi.encodeCall(Swapper.wrap, (address(weth)));
+        calls[1] = abi.encodeCall(Swapper.approve, (address(weth), address(wethSwapTarget)));
+        calls[2] = abi.encodeCall(Swapper.approve, (address(tokenB), address(vault)));
+        calls[3] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
+        calls[4] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 0, user));
+
+        swapper.multicall{value: 1 ether}(calls);
+
+        assertEq(vault.deposits(user), 1 ether);
+        assertEq(address(swapper).balance, 0);
+    }
+
+    function test_multicall_nativeSwapDeposit() public {
+        MockSwapTargetETH ethTarget = new MockSwapTargetETH(tokenB, 1e18);
+        bytes memory payload = abi.encodeCall(MockSwapTargetETH.swap, ());
+        bytes memory data = abi.encode(address(ethTarget), payload);
+
+        bytes[] memory calls = new bytes[](3);
+        calls[0] = abi.encodeCall(Swapper.approve, (address(tokenB), address(vault)));
+        calls[1] = abi.encodeCall(Swapper.swapSimple, (1 ether, data));
+        calls[2] = abi.encodeCall(Swapper.deposit, (address(tokenB), address(vault), 0, user));
+
+        swapper.multicall{value: 1 ether}(calls);
+
+        assertEq(vault.deposits(user), 1 ether);
+        assertEq(address(swapper).balance, 0);
+    }
+
+    function test_multicall_swapUnwrapSweepNative() public {
+        MockWETH weth = new MockWETH();
+        vm.deal(address(this), 10 ether);
+
+        weth.deposit{value: 1 ether}();
+        MockERC20(address(weth)).transfer(address(swapper), 1 ether);
+
+        uint256 receiverBalBefore = receiver.balance;
+
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(Swapper.unwrap, (address(weth), type(uint256).max));
+        calls[1] = abi.encodeCall(Swapper.sweepNative, (0.9 ether, receiver));
+
+        swapper.multicall(calls);
+
+        assertEq(receiver.balance - receiverBalBefore, 1 ether);
+        assertEq(address(swapper).balance, 0);
     }
 }

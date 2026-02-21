@@ -255,6 +255,22 @@ contract MockSwapTarget {
     }
 }
 
+/// @dev Takes native ETH from caller via msg.value, mints tokenOut to caller at a configurable rate
+contract MockSwapTargetETH {
+    MockERC20 public tokenOut;
+    uint256 public rate; // tokenOut per ETH (1:1 = 1e18)
+
+    constructor(MockERC20 _tokenOut, uint256 _rate) {
+        tokenOut = _tokenOut;
+        rate = _rate;
+    }
+
+    function swap() external payable {
+        uint256 amountOut = msg.value * rate / 1e18;
+        tokenOut.mint(msg.sender, amountOut);
+    }
+}
+
 /// @dev Swap target that always reverts
 contract MockSwapTargetReverting {
     function swap(uint256) external pure {

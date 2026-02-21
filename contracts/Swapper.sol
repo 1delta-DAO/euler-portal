@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IVault} from "./interfaces/IVault.sol";
+import {IWETH} from "./interfaces/IWETH.sol";
 import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 
 /// @title Swapper
@@ -20,11 +21,11 @@ contract Swapper {
     // --- Structs ---
 
     struct SwapParams {
-        address tokenIn; // Token sold — approved to the swap target
-        address tokenOut; // Token bought — approved to vault for repay/deposit
+        address tokenOut; // Token bought — used for post-swap vault interactions
         address vault; // Vault for repay and deposit
         address account; // Account for debt queries and repay/deposit receiver
         uint256 targetDebt; // Target debt after repay. 0 = repay all debt.
+        uint256 value; // Native value to forward to swap target (0 for ERC20 swaps)
         bytes data; // abi.encode(target, callData) for generic swap
     }
 
@@ -34,6 +35,9 @@ contract Swapper {
     uint256 internal constant REENTRANCYLOCK_LOCKED = 2;
 
     uint256 private reentrancyLock;
+
+    /// @dev Tracks token+spender pairs that have already been max-approved, to skip redundant approve calls.
+    mapping(address => mapping(address => bool)) private _approved;
 
     /// @dev In the locked state, allow the contract to call itself (for multicall), but block all external calls
     modifier externalLock() {
@@ -55,6 +59,7 @@ contract Swapper {
     error Swapper_SwapError(address target, bytes result);
     error Swapper_InsufficientBalance();
     error Swapper_TargetDebt();
+    error Swapper_NativeTransferFailed();
 
     // ==========================
     // Core Swap Functions
@@ -63,20 +68,20 @@ contract Swapper {
     /// @notice Execute an arbitrary swap with no post-processing.
     /// @dev Output tokens remain in the contract and must be handled separately
     /// (e.g., via multicall with deposit/sweep, or via an external batch step).
-    /// @param tokenIn The token to approve to the swap target.
+    /// Caller must pre-approve tokenIn to the swap target via `approve()`.
+    /// @param value Native currency value to forward to the swap target (0 for ERC20 swaps).
     /// @param data ABI-encoded tuple: (address target, bytes callData).
-    function swapSimple(address tokenIn, bytes calldata data) public externalLock {
-        _swapGeneric(tokenIn, data);
+    function swapSimple(uint256 value, bytes calldata data) public payable externalLock {
+        _swapGeneric(value, data);
     }
 
     /// @notice Execute a swap then deposit the full output balance to a vault.
     /// @param params Swap parameters. The `targetDebt` field is ignored.
-    function swapAndDeposit(SwapParams memory params) public externalLock {
-        _swapGeneric(params.tokenIn, params.data);
+    function swapAndDeposit(SwapParams memory params) public payable externalLock {
+        _swapGeneric(params.value, params.data);
 
         uint256 balance = IERC20(params.tokenOut).balanceOf(address(this));
         if (balance > 0) {
-            _setMaxAllowance(params.tokenOut, params.vault);
             IVault(params.vault).deposit(balance, params.account);
         }
     }
@@ -84,7 +89,7 @@ contract Swapper {
     /// @notice Execute a swap then repay debt and deposit the remainder to a vault.
     /// @dev If `targetDebt` is 0, repays all debt. Otherwise repays `currentDebt - targetDebt`.
     /// @param params Swap parameters.
-    function swapAndRepay(SwapParams memory params) public externalLock {
+    function swapAndRepay(SwapParams memory params) public payable externalLock {
         // Resolve repay amount from target debt
         uint256 repayAmount;
         if (params.targetDebt == 0) {
@@ -97,10 +102,64 @@ contract Swapper {
             }
         }
 
-        _swapGeneric(params.tokenIn, params.data);
+        _swapGeneric(params.value, params.data);
 
         _repayAndDeposit(params.tokenOut, params.vault, repayAmount, params.account);
     }
+
+    // ==========================
+    // Approval
+    // ==========================
+
+    /// @notice Max-approve a token for a spender and cache the result.
+    /// @dev Use when the approval target differs from the swap router (e.g., a separate permit2 contract).
+    /// Subsequent calls to internal approval helpers will skip the approve if already cached.
+    /// @param token The token to approve.
+    /// @param spender The address to approve for spending.
+    function approve(address token, address spender) public {
+        _setMaxAllowance(token, spender);
+    }
+
+    // ==========================
+    // Native / Wrapped Native
+    // ==========================
+
+    /// @notice Wrap the contract's entire native currency balance into wrapped native (e.g., WETH, WBNB).
+    /// @dev Payable so it works both standalone (`wrap{value: X}(wrappedNative)`) and inside multicall
+    /// (native currency already in contract). Uses `address(this).balance`, never `msg.value`.
+    /// @param wrappedNative The wrapped native token contract address (e.g., WETH, WBNB).
+    function wrap(address wrappedNative) public payable externalLock {
+        uint256 amount = address(this).balance;
+        if (amount == 0) return;
+        IWETH(wrappedNative).deposit{value: amount}();
+    }
+
+    /// @notice Unwrap wrapped native token to native currency.
+    /// The native currency stays in the contract for subsequent sweepNative.
+    /// @param wrappedNative The wrapped native token contract address.
+    /// @param amount Amount to unwrap. Use type(uint256).max to unwrap all.
+    function unwrap(address wrappedNative, uint256 amount) public externalLock {
+        if (amount == type(uint256).max) {
+            amount = IERC20(wrappedNative).balanceOf(address(this));
+        }
+        if (amount == 0) return;
+        IWETH(wrappedNative).withdraw(amount);
+    }
+
+    /// @notice Send the contract's native currency balance to a recipient.
+    /// @dev Reverts if balance < amountMin (slippage check).
+    /// @param amountMin Minimum native balance required. Reverts if not met.
+    /// @param to Recipient address.
+    function sweepNative(uint256 amountMin, address to) public externalLock {
+        uint256 balance = address(this).balance;
+        if (balance < amountMin) revert Swapper_InsufficientBalance();
+        if (balance == 0) return;
+        (bool success,) = to.call{value: balance}("");
+        if (!success) revert Swapper_NativeTransferFailed();
+    }
+
+    /// @dev Accept native currency. Required for wrapped native withdraw() and payable multicall.
+    receive() external payable {}
 
     // ==========================
     // Standalone Post-Swap Actions
@@ -117,7 +176,6 @@ contract Swapper {
         if (balance < amountMin) revert Swapper_InsufficientBalance();
         if (balance == 0) return;
 
-        _setMaxAllowance(token, vault);
         IVault(vault).deposit(balance, account);
     }
 
@@ -136,7 +194,6 @@ contract Swapper {
         if (balance < amountMin) revert Swapper_InsufficientBalance();
         if (balance == 0) return;
 
-        _setMaxAllowance(token, vault);
         repayAmount = _capRepayToBalance(repayAmount, balance);
         IVault(vault).repay(repayAmount, account);
     }
@@ -180,7 +237,7 @@ contract Swapper {
     /// @dev Each call is executed via `address(this).call()`, which re-enters through `externalLock`
     /// as a self-call (allowed). Reverts bubble up from inner calls.
     /// @param calls Array of ABI-encoded function calls.
-    function multicall(bytes[] memory calls) public externalLock {
+    function multicall(bytes[] memory calls) public payable externalLock {
         for (uint256 i; i < calls.length; i++) {
             (bool success, bytes memory result) = address(this).call(calls[i]);
             if (!success) {
@@ -197,12 +254,11 @@ contract Swapper {
     // ==========================
 
     /// @dev Execute an arbitrary swap via the generic handler pattern.
-    function _swapGeneric(address tokenIn, bytes memory data) internal {
+    /// Forwards `value` as native currency to the swap target.
+    function _swapGeneric(uint256 value, bytes memory data) internal {
         (address target, bytes memory payload) = abi.decode(data, (address, bytes));
 
-        _setMaxAllowance(tokenIn, target);
-
-        (bool success, bytes memory result) = target.call(payload);
+        (bool success, bytes memory result) = target.call{value: value}(payload);
         if (!success || (result.length == 0 && target.code.length == 0)) {
             revert Swapper_SwapError(target, result);
         }
@@ -210,7 +266,6 @@ contract Swapper {
 
     /// @dev Repay debt then deposit any remaining balance into the same vault.
     function _repayAndDeposit(address token, address vault, uint256 repayAmount, address account) internal {
-        _setMaxAllowance(token, vault);
         uint256 balance = IERC20(token).balanceOf(address(this));
         repayAmount = _capRepayToBalance(repayAmount, balance);
 
@@ -230,8 +285,12 @@ contract Swapper {
     }
 
     /// @dev Approve max allowance to spender, with USDT-safe retry (reset to 0 first if needed).
+    /// Skips the call if the token+spender pair was already approved (cached).
     function _setMaxAllowance(address token, address spender) internal {
+        if (_approved[token][spender]) return;
+
         _safeApproveWithRetry(token, spender, type(uint256).max);
+        _approved[token][spender] = true;
     }
 
     function _safeApproveWithRetry(address token, address spender, uint256 value) internal {
