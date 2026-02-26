@@ -1,9 +1,9 @@
-# Euler Portal — Payments & Swapper
+# Euler Portal — Payments & Orchestrator
 
 EVC-integrated periphery contracts for the Euler ecosystem. Provides two building blocks for atomic multi-step flows:
 
 - **Payments** — EVC-authenticated token transfers (pull from user, push to receiver)
-- **Swapper** — Untrusted swap execution with composable post-swap actions (deposit, repay, sweep)
+- **Orchestrator** — Untrusted swap execution with composable post-swap actions (deposit, repay, sweep)
 
 Together they enable flows like: pull tokens from user → swap on any DEX → deposit into Euler vault — all in a single atomic EVC batch.
 
@@ -18,21 +18,24 @@ A stateless pass-through contract secured by the [Ethereum Vault Connector (EVC)
 **Core transfer:**
 - `transfer(token, receiver, amount)` — Pull tokens from sender, send to receiver. Tries [Permit2](https://github.com/Uniswap/permit2) first, falls back to standard `transferFrom`.
 
-**Permit + transfer (gasless approvals):**
-- `transferWithPermit(...)` — ERC-2612 permit, then transfer.
-- `transferWithDaiPermit(...)` — Dai-style permit, then transfer.
-- `transferWithPermit2(...)` — Permit2 signature permit, then transfer.
+**Permit utilities (gasless approvals):**
+- `permit(token, owner, amount, deadline, v, r, s)` — Execute ERC-2612 permit granting this contract an allowance.
+- `permitDai(token, owner, nonce, expiry, allowed, v, r, s)` — Execute Dai-style permit granting this contract an allowance.
+- `permit2Permit(token, owner, amount, nonce, deadline, signature)` — Execute Permit2 AllowanceTransfer permit granting this contract a Permit2 allowance.
+
+These are standalone permit utilities — they set allowances but do not transfer tokens. Use them as a preceding step before `transfer()` in an EVC batch. All use `try/catch` so front-running or pre-existing approvals don't revert the batch.
 
 **Native ETH / WETH:**
 - `wrapAndTransfer(weth, receiver, amount)` — Wrap ETH into WETH, transfer to receiver. Refunds excess.
 - `unwrapAndTransfer(weth, receiver, amount)` — Pull WETH from sender, unwrap, send native ETH.
 - `transferNative(receiver)` — Forward `msg.value` as native ETH.
 
-All permit calls use `try/catch` so front-running or pre-existing approvals don't revert the transaction.
+**Permit2 Batch Pull:**
+- `permit2TransferFrom(permit, transferDetails, signature)` — Pull multiple tokens from the authenticated sender in a single step via [Permit2 SignatureTransfer](https://github.com/Uniswap/permit2). The user signs one off-chain EIP-712 signature authorising the batch transfer — no on-chain approvals needed.
 
 ### Security
 
-- **EVC authentication** — Every function uses `callThroughEVC`. The `_msgSender()` resolves the EVC-authenticated account (owner or authorized operator), never raw `msg.sender`. Same authentication model as Euler vault deposits.
+- **EVC authentication** — Transfer functions use `callThroughEVC`. The `_msgSender()` resolves the EVC-authenticated account (owner or authorized operator), never raw `msg.sender`. Permit utilities and `permit2TransferFrom` are unauthenticated — signatures are the authorization.
 - **Approval-gated** — Cannot move tokens without the sender having approved this contract, Permit2, or provided a valid permit signature.
 - **Sub-account protection** — Rejects transfers to EVC sub-accounts whose private keys are unknown.
 - **Reentrancy guard** — All external functions protected by `nonReentrant`.
@@ -40,15 +43,15 @@ All permit calls use `try/catch` so front-running or pre-existing approvals don'
 
 ---
 
-## Swapper
+## Orchestrator
 
 An untrusted helper contract for executing arbitrary token swaps and composable post-swap vault interactions. It holds no persistent state and needs no authentication — tokens are transferred in, processed, and moved out within a single transaction.
 
-The contract uses a **generic handler** pattern: swap calldata is `abi.encode(target, payload)`, and the Swapper executes `target.call{value: value}(payload)`. This means it works with any DEX or aggregator without requiring protocol-specific handler code.
+The contract uses a **generic handler** pattern: swap calldata is `abi.encode(target, payload)`, and the Orchestrator executes `target.call{value: value}(payload)`. This means it works with any DEX or aggregator without requiring protocol-specific handler code.
 
 ### Explicit Approvals
 
-The Swapper does **not** auto-approve tokens. Callers must explicitly compose `approve()` calls as part of their `multicall` sequence before any operation that requires token spending. This keeps the swap path minimal and makes approval flow transparent:
+The Orchestrator does **not** auto-approve tokens. Callers must explicitly compose `approve()` calls as part of their `multicall` sequence before any operation that requires token spending. This keeps the swap path minimal and makes approval flow transparent:
 
 ```solidity
 // approve() max-approves a token for a spender and caches the result.
@@ -61,14 +64,14 @@ Typical multicall with approvals:
 ```solidity
 bytes[] memory calls = new bytes[](4);
 // 1) Approve the swap router to spend tokenIn
-calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
+calls[0] = abi.encodeCall(Orchestrator.approve, (USDC, swapRouter));
 // 2) Approve the vault to spend tokenOut (for deposit)
-calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
+calls[1] = abi.encodeCall(Orchestrator.approve, (WETH, wethVault));
 // 3) Execute the swap
-calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
+calls[2] = abi.encodeCall(Orchestrator.swapSimple, (0, swapData));
 // 4) Deposit output into vault
-calls[3] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWethOut, user));
-swapper.multicall(calls);
+calls[3] = abi.encodeCall(Orchestrator.deposit, (WETH, wethVault, minWethOut, user));
+orchestrator.multicall(calls);
 ```
 
 The approval cache persists across transactions — once a token+spender pair is approved, future multicalls can omit that `approve()` step. The cache uses USDT-safe approve-with-retry (resets to 0 first if needed).
@@ -81,48 +84,50 @@ All post-swap actions (deposit, repay, sweep) are composed via `multicall`. This
 
 ### Native Currency Support
 
-The Swapper supports native currency (ETH, BNB, etc.) for omni-chain deployment. Swap functions accept a `value` parameter — the native currency amount forwarded to the swap target. This is drawn from `address(this).balance`, not `msg.value`, to avoid double-spend issues in multicall.
+The Orchestrator supports native currency (ETH, BNB, etc.) for omni-chain deployment. Swap functions accept a `value` parameter — the native currency amount forwarded to the swap target. This is drawn from `address(this).balance`, not `msg.value`, to avoid double-spend issues in multicall.
 
 **Utility functions:**
 
 | Function | What it does |
 |---|---|
-| `wrap(wrappedNative)` | Wrap contract's full native balance into wrapped native token (e.g., WETH, WBNB) |
+| `wrap(wrappedNative, amount)` | Wrap native balance into wrapped native token. `type(uint256).max` = wrap all |
+| `wrapTo(wrappedNative, amount, to)` | Wrap native and transfer wrapped tokens to recipient. Saves a `sweep` step |
 | `unwrap(wrappedNative, amount)` | Unwrap wrapped native to native currency. `type(uint256).max` = unwrap all |
+| `unwrapTo(wrappedNative, amount, to)` | Unwrap and send native currency to recipient. Saves a `sweepNative` step |
 | `sweepNative(amountMin, to)` | Send native currency balance to recipient with slippage check |
 
-All three are payable. The contract has a `receive()` fallback to accept native currency.
+The wrapping functions (`wrap`, `wrapTo`) are payable. The contract has a `receive()` fallback to accept native currency.
 
 **Native swap via multicall (direct forwarding):**
 
 ```solidity
 bytes[] memory calls = new bytes[](2);
 // Swap native currency -> USDC via DEX router that accepts native
-calls[0] = abi.encodeCall(Swapper.swapSimple, (1 ether, swapData));
-calls[1] = abi.encodeCall(Swapper.deposit, (USDC, usdcVault, minUsdc, user));
-swapper.multicall{value: 1 ether}(calls);
+calls[0] = abi.encodeCall(Orchestrator.swapSimple, (1 ether, swapData));
+calls[1] = abi.encodeCall(Orchestrator.deposit, (USDC, usdcVault, minUsdc, user));
+orchestrator.multicall{value: 1 ether}(calls);
 ```
 
 **Native swap via multicall (wrap-first):**
 
 ```solidity
 bytes[] memory calls = new bytes[](4);
-calls[0] = abi.encodeCall(Swapper.wrap, (WETH));                           // ETH -> WETH
-calls[1] = abi.encodeCall(Swapper.approve, (WETH, swapRouter));            // Approve router
-calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));              // Swap WETH -> USDC
-calls[3] = abi.encodeCall(Swapper.deposit, (USDC, usdcVault, minUsdc, user));
-swapper.multicall{value: 1 ether}(calls);
+calls[0] = abi.encodeCall(Orchestrator.wrap, (WETH, type(uint256).max));       // ETH -> WETH
+calls[1] = abi.encodeCall(Orchestrator.approve, (WETH, swapRouter));            // Approve router
+calls[2] = abi.encodeCall(Orchestrator.swapSimple, (0, swapData));              // Swap WETH -> USDC
+calls[3] = abi.encodeCall(Orchestrator.deposit, (USDC, usdcVault, minUsdc, user));
+orchestrator.multicall{value: 1 ether}(calls);
 ```
 
 **Unwrap flow (token -> native currency):**
 
 ```solidity
 bytes[] memory calls = new bytes[](4);
-calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
-calls[1] = abi.encodeCall(Swapper.swapSimple, (0, swapData));              // USDC -> WETH
-calls[2] = abi.encodeCall(Swapper.unwrap, (WETH, type(uint256).max));      // WETH -> native
-calls[3] = abi.encodeCall(Swapper.sweepNative, (minNativeOut, user));
-swapper.multicall(calls);
+calls[0] = abi.encodeCall(Orchestrator.approve, (USDC, swapRouter));
+calls[1] = abi.encodeCall(Orchestrator.swapSimple, (0, swapData));              // USDC -> WETH
+calls[2] = abi.encodeCall(Orchestrator.unwrap, (WETH, type(uint256).max));      // WETH -> native
+calls[3] = abi.encodeCall(Orchestrator.sweepNative, (minNativeOut, user));
+orchestrator.multicall(calls);
 ```
 
 ### Post-Swap Actions
@@ -137,19 +142,19 @@ Standalone functions for vault interactions, each with a **minimum amount that r
 | `sweep(token, amountMin, to)` | Transfer full ERC20 balance to recipient |
 | `sweepNative(amountMin, to)` | Transfer full native currency balance to recipient |
 
-All functions revert with `Swapper_InsufficientBalance` if the contract's balance is below `amountMin`. Pass `amountMin = 0` to skip the check.
+All functions revert with `Orchestrator_InsufficientBalance` if the contract's balance is below `amountMin`. Pass `amountMin = 0` to skip the check.
 
 ### Multicall
 
-`multicall(bytes[] calls)` executes multiple functions on the Swapper in sequence within a single external call. It is `payable` to support native currency flows. This enables composing any combination of approvals, swaps, and post-actions:
+`multicall(bytes[] calls)` executes multiple functions on the Orchestrator in sequence within a single external call. It is `payable` to support native currency flows. This enables composing any combination of approvals, swaps, and post-actions:
 
 ```solidity
 bytes[] memory calls = new bytes[](4);
-calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
-calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
-calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
-calls[3] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWeth, user));
-swapper.multicall(calls);
+calls[0] = abi.encodeCall(Orchestrator.approve, (USDC, swapRouter));
+calls[1] = abi.encodeCall(Orchestrator.approve, (WETH, wethVault));
+calls[2] = abi.encodeCall(Orchestrator.swapSimple, (0, swapData));
+calls[3] = abi.encodeCall(Orchestrator.deposit, (WETH, wethVault, minWeth, user));
+orchestrator.multicall(calls);
 ```
 
 ### Security
@@ -162,34 +167,34 @@ swapper.multicall(calls);
 
 ---
 
-## Batching — Payments + Swapper
+## Batching — Payments + Orchestrator
 
 The two contracts are designed to work together inside EVC batches. A typical swap-and-deposit flow:
 
 ```solidity
 // Build a multicall that approves, swaps, and deposits
 bytes[] memory calls = new bytes[](4);
-calls[0] = abi.encodeCall(Swapper.approve, (USDC, swapRouter));
-calls[1] = abi.encodeCall(Swapper.approve, (WETH, wethVault));
-calls[2] = abi.encodeCall(Swapper.swapSimple, (0, swapData));
-calls[3] = abi.encodeCall(Swapper.deposit, (WETH, wethVault, minWeth, user));
+calls[0] = abi.encodeCall(Orchestrator.approve, (USDC, swapRouter));
+calls[1] = abi.encodeCall(Orchestrator.approve, (WETH, wethVault));
+calls[2] = abi.encodeCall(Orchestrator.swapSimple, (0, swapData));
+calls[3] = abi.encodeCall(Orchestrator.deposit, (WETH, wethVault, minWeth, user));
 
 IEVC.BatchItem[] memory items = new IEVC.BatchItem[](2);
 
-// 1) Pull USDC from user to the swapper (EVC-authenticated)
+// 1) Pull USDC from user to the orchestrator (EVC-authenticated)
 items[0] = IEVC.BatchItem({
     targetContract: address(payments),
     onBehalfOfAccount: user,
     value: 0,
-    data: abi.encodeCall(Payments.transfer, (USDC, address(swapper), usdcAmount))
+    data: abi.encodeCall(Payments.transfer, (USDC, address(orchestrator), usdcAmount))
 });
 
-// 2) Swapper: approve, swap USDC -> WETH, and deposit into vault
+// 2) Orchestrator: approve, swap USDC -> WETH, and deposit into vault
 items[1] = IEVC.BatchItem({
-    targetContract: address(swapper),
+    targetContract: address(orchestrator),
     onBehalfOfAccount: address(0),
     value: 0,
-    data: abi.encodeCall(Swapper.multicall, (calls))
+    data: abi.encodeCall(Orchestrator.multicall, (calls))
 });
 
 evc.batch(items);
@@ -200,15 +205,15 @@ evc.batch(items);
 ```solidity
 // Swap native currency -> USDC -> vault
 bytes[] memory calls = new bytes[](2);
-calls[0] = abi.encodeCall(Swapper.swapSimple, (1 ether, swapData));
-calls[1] = abi.encodeCall(Swapper.deposit, (USDC, usdcVault, minUsdc, user));
+calls[0] = abi.encodeCall(Orchestrator.swapSimple, (1 ether, swapData));
+calls[1] = abi.encodeCall(Orchestrator.deposit, (USDC, usdcVault, minUsdc, user));
 
 IEVC.BatchItem[] memory items = new IEVC.BatchItem[](1);
 items[0] = IEVC.BatchItem({
-    targetContract: address(swapper),
+    targetContract: address(orchestrator),
     onBehalfOfAccount: address(0),
     value: 1 ether,
-    data: abi.encodeCall(Swapper.multicall, (calls))
+    data: abi.encodeCall(Orchestrator.multicall, (calls))
 });
 
 evc.batch{value: 1 ether}(items);
@@ -242,8 +247,8 @@ evc.batch(items);
 
 ### Other Patterns
 - **Split payments** — one batch transferring to multiple receivers atomically.
-- **Permit + transfer** — sign approval off-chain, include as a batch item alongside the transfer.
-- **Multi-swap** — use Swapper multicall to chain multiple swaps and deposits.
+- **Permit + transfer** — sign approval off-chain, call permit utility, then transfer in the same batch.
+- **Multi-swap** — use Orchestrator multicall to chain multiple swaps and deposits.
 
 ---
 

@@ -2,21 +2,19 @@
 
 pragma solidity ^0.8.24;
 
-import {ISwapper} from "./interfaces/ISwapper.sol";
+import {IOrchestrator} from "./interfaces/IOrchestrator.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 
-/// @title Swapper
-/// @custom:security-contact security@euler.xyz
-/// @author Euler Labs (https://www.eulerlabs.com/)
+/// @title Orchestrator
 /// @notice Untrusted helper contract for executing arbitrary swaps via a generic handler
 /// and composable post-swap actions (deposit, repay, sweep) with slippage checks.
 /// @dev This contract is entirely untrusted — it holds no persistent token balances and needs no authentication.
 /// Tokens are transferred in, processed, and moved out within a single transaction.
 /// The `externalLock` modifier allows self-calls (for multicall) but blocks external reentrancy.
-contract Swapper is ISwapper {
+contract Orchestrator is IOrchestrator {
     using SafeERC20Lib for IERC20;
 
     // --- Reentrancy lock ---
@@ -34,7 +32,7 @@ contract Swapper is ISwapper {
         bool isExternal = msg.sender != address(this);
 
         if (isExternal) {
-            if (reentrancyLock == REENTRANCYLOCK_LOCKED) revert Swapper_Reentrancy();
+            if (reentrancyLock == REENTRANCYLOCK_LOCKED) revert Orchestrator_Reentrancy();
             reentrancyLock = REENTRANCYLOCK_LOCKED;
         }
 
@@ -74,14 +72,32 @@ contract Swapper is ISwapper {
     // Native / Wrapped Native
     // ==========================
 
-    /// @notice Wrap the contract's entire native currency balance into wrapped native (e.g., WETH, WBNB).
-    /// @dev Payable so it works both standalone (`wrap{value: X}(wrappedNative)`) and inside multicall
+    /// @notice Wrap native currency into wrapped native (e.g., WETH, WBNB).
+    /// @dev Payable so it works both standalone (`wrap{value: X}(wrappedNative, amount)`) and inside multicall
     /// (native currency already in contract). Uses `address(this).balance`, never `msg.value`.
     /// @param wrappedNative The wrapped native token contract address (e.g., WETH, WBNB).
-    function wrap(address wrappedNative) public payable externalLock {
-        uint256 amount = address(this).balance;
+    /// @param amount Amount to wrap. Use type(uint256).max to wrap all.
+    function wrap(address wrappedNative, uint256 amount) public payable externalLock {
+        if (amount == type(uint256).max) {
+            amount = address(this).balance;
+        }
         if (amount == 0) return;
         IWETH(wrappedNative).deposit{value: amount}();
+    }
+
+    /// @notice Wrap native currency and transfer the wrapped tokens to a recipient.
+    /// @dev Wraps and transfers in one step — no separate sweep needed.
+    /// Useful for sending wrapped native directly to a vault for skim-based deposits.
+    /// @param wrappedNative The wrapped native token contract address (e.g., WETH, WBNB).
+    /// @param amount Amount to wrap. Use type(uint256).max to wrap all.
+    /// @param to Recipient address for the wrapped tokens.
+    function wrapTo(address wrappedNative, uint256 amount, address to) public payable externalLock {
+        if (amount == type(uint256).max) {
+            amount = address(this).balance;
+        }
+        if (amount == 0) return;
+        IWETH(wrappedNative).deposit{value: amount}();
+        IERC20(wrappedNative).safeTransfer(to, amount);
     }
 
     /// @notice Unwrap wrapped native token to native currency.
@@ -96,16 +112,31 @@ contract Swapper is ISwapper {
         IWETH(wrappedNative).withdraw(amount);
     }
 
+    /// @notice Unwrap wrapped native token and send native currency to a recipient.
+    /// @dev Unwraps and transfers in one step — no separate sweepNative needed.
+    /// @param wrappedNative The wrapped native token contract address.
+    /// @param amount Amount to unwrap. Use type(uint256).max to unwrap all.
+    /// @param to Recipient address for the native currency.
+    function unwrapTo(address wrappedNative, uint256 amount, address to) public externalLock {
+        if (amount == type(uint256).max) {
+            amount = IERC20(wrappedNative).balanceOf(address(this));
+        }
+        if (amount == 0) return;
+        IWETH(wrappedNative).withdraw(amount);
+        (bool success,) = to.call{value: amount}("");
+        if (!success) revert Orchestrator_NativeTransferFailed();
+    }
+
     /// @notice Send the contract's native currency balance to a recipient.
     /// @dev Reverts if balance < amountMin (slippage check).
     /// @param amountMin Minimum native balance required. Reverts if not met.
     /// @param to Recipient address.
     function sweepNative(uint256 amountMin, address to) public externalLock {
         uint256 balance = address(this).balance;
-        if (balance < amountMin) revert Swapper_InsufficientBalance();
+        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
         if (balance == 0) return;
         (bool success,) = to.call{value: balance}("");
-        if (!success) revert Swapper_NativeTransferFailed();
+        if (!success) revert Orchestrator_NativeTransferFailed();
     }
 
     /// @dev Accept native currency. Required for wrapped native withdraw() and payable multicall.
@@ -123,7 +154,7 @@ contract Swapper is ISwapper {
     /// @param account Receiver of the vault shares.
     function deposit(address token, address vault, uint256 amountMin, address account) public externalLock {
         uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Swapper_InsufficientBalance();
+        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
         if (balance == 0) return;
 
         IVault(vault).deposit(balance, account);
@@ -136,12 +167,9 @@ contract Swapper is ISwapper {
     /// @param repayAmount Amount of debt to repay. Use type(uint256).max to repay all.
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param account Account whose debt is repaid.
-    function repay(address token, address vault, uint256 repayAmount, uint256 amountMin, address account)
-        public
-        externalLock
-    {
+    function repay(address token, address vault, uint256 repayAmount, uint256 amountMin, address account) public externalLock {
         uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Swapper_InsufficientBalance();
+        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
         if (balance == 0) return;
 
         repayAmount = _capRepay(repayAmount, balance, IVault(vault).debtOf(account));
@@ -155,12 +183,18 @@ contract Swapper is ISwapper {
     /// @param repayAmount Amount of debt to repay. Use type(uint256).max to repay all.
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param account Account whose debt is repaid and who receives deposit shares.
-    function repayAndDeposit(address token, address vault, uint256 repayAmount, uint256 amountMin, address account)
+    function repayAndDeposit(
+        address token,
+        address vault,
+        uint256 repayAmount,
+        uint256 amountMin,
+        address account
+    )
         public
         externalLock
     {
         uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Swapper_InsufficientBalance();
+        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
         if (balance == 0) return;
 
         _repayAndDeposit(token, vault, repayAmount, account);
@@ -173,7 +207,7 @@ contract Swapper is ISwapper {
     /// @param to Recipient address.
     function sweep(address token, uint256 amountMin, address to) public externalLock {
         uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Swapper_InsufficientBalance();
+        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
         if (balance == 0) return;
 
         IERC20(token).safeTransfer(to, balance);
@@ -210,7 +244,7 @@ contract Swapper is ISwapper {
 
         (bool success, bytes memory result) = target.call{value: value}(payload);
         if (!success || (result.length == 0 && target.code.length == 0)) {
-            revert Swapper_SwapError(target, result);
+            revert Orchestrator_SwapError(target, result);
         }
     }
 
@@ -255,13 +289,10 @@ contract Swapper is ISwapper {
             }
         }
 
-        if (!success) revert Swapper_SwapError(token, "");
+        if (!success) revert Orchestrator_SwapError(token, "");
     }
 
-    function _trySafeApprove(address token, address spender, uint256 value)
-        internal
-        returns (bool, bytes memory)
-    {
+    function _trySafeApprove(address token, address spender, uint256 value) internal returns (bool, bytes memory) {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, value));
         return (success && (data.length == 0 || abi.decode(data, (bool))), data);
     }

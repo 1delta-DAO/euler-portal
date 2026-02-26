@@ -2,18 +2,18 @@
 
 pragma solidity >=0.8.0;
 
-/// @title ISwapper
-/// @notice Interface for the Swapper contract — an untrusted helper for executing arbitrary swaps
+/// @title IOrchestrator
+/// @notice Interface for the Orchestrator contract — an untrusted helper for executing arbitrary swaps
 /// via a generic handler and composable post-swap actions (deposit, repay, sweep) with slippage checks.
-/// @dev The Swapper is entirely untrusted — it holds no persistent token balances and needs no authentication.
+/// @dev The Orchestrator is entirely untrusted — it holds no persistent token balances and needs no authentication.
 /// Tokens are transferred in (via Payments, vault.withdraw, vault.borrow, or direct transfer), processed
 /// through a DEX swap, and moved out (via deposit, repay, sweep) within a single transaction.
 ///
-/// **Generic handler pattern**: Swap data is `abi.encode(target, payload)`. The Swapper calls
+/// **Generic handler pattern**: Swap data is `abi.encode(target, payload)`. The Orchestrator calls
 /// `target.call{value: value}(payload)`. This works with any DEX router or aggregator without requiring
 /// protocol-specific handler code.
 ///
-/// **Explicit approvals**: The Swapper does NOT auto-approve tokens. Callers must compose `approve()` calls
+/// **Explicit approvals**: The Orchestrator does NOT auto-approve tokens. Callers must compose `approve()` calls
 /// in their multicall sequence before operations that require spending (swaps, vault deposits, vault repays).
 /// Approvals are cached per token+spender pair — once approved, subsequent calls are no-ops.
 ///
@@ -22,30 +22,30 @@ pragma solidity >=0.8.0;
 /// in multicall. Use `wrap`/`unwrap`/`sweepNative` for native currency conversion.
 ///
 /// **Composability**: All functions can be combined via `multicall` for complex flows. For cross-contract
-/// orchestration (e.g., Payments pull + Swapper swap), use EVC batches where each batch item is an
-/// external call and multicall handles Swapper-internal composition.
+/// orchestration (e.g., Payments pull + Orchestrator swap), use EVC batches where each batch item is an
+/// external call and multicall handles Orchestrator-internal composition.
 ///
 /// **Reentrancy**: The `externalLock` modifier blocks external reentrancy but allows self-calls,
-/// which is required for multicall to invoke other Swapper functions.
-interface ISwapper {
+/// which is required for multicall to invoke other Orchestrator functions.
+interface IOrchestrator {
     // --- Errors ---
 
     /// @notice Thrown when an external caller attempts to enter while the reentrancy lock is held.
     /// Self-calls (from multicall) are allowed.
-    error Swapper_Reentrancy();
+    error Orchestrator_Reentrancy();
 
     /// @notice Thrown when the swap target call fails or the target has no code.
     /// @param target The address that was called.
     /// @param result The revert data returned by the failed call (empty if target has no code).
-    error Swapper_SwapError(address target, bytes result);
+    error Orchestrator_SwapError(address target, bytes result);
 
     /// @notice Thrown when the contract's token or native balance is below the required minimum (slippage check).
     /// Applies to: deposit, repay, repayAndDeposit, sweep, sweepNative.
-    error Swapper_InsufficientBalance();
+    error Orchestrator_InsufficientBalance();
 
     /// @notice Thrown when a native currency transfer to a recipient fails (recipient rejected or out of gas).
     /// Applies to: sweepNative.
-    error Swapper_NativeTransferFailed();
+    error Orchestrator_NativeTransferFailed();
 
     // ==========================
     // Core Swap Function
@@ -57,7 +57,7 @@ interface ISwapper {
     ///
     /// The caller must ensure the swap target has been approved to spend the input token via `approve()`.
     ///
-    /// For ERC20 swaps, set `value = 0`. The swap target pulls tokens from the Swapper via the
+    /// For ERC20 swaps, set `value = 0`. The swap target pulls tokens from the Orchestrator via the
     /// pre-configured allowance.
     ///
     /// For native currency swaps, set `value` to the native amount to forward. The swap target receives
@@ -79,16 +79,16 @@ interface ISwapper {
     /// Uses USDT-safe approve-with-retry: if the initial approve fails (e.g., USDT requires resetting
     /// allowance to 0 first), it automatically resets to 0 and retries.
     ///
-    /// **This must be called before any operation where an external contract pulls tokens from the Swapper:**
+    /// **This must be called before any operation where an external contract pulls tokens from the Orchestrator:**
     /// - Before `swapSimple`: approve the DEX router to spend tokenIn.
     /// - Before `deposit` / `repay` / `repayAndDeposit`: approve the vault to spend the token.
     ///
     /// Typical usage in multicall:
     /// ```
-    /// calls[0] = abi.encodeCall(ISwapper.approve, (tokenIn, router));
-    /// calls[1] = abi.encodeCall(ISwapper.approve, (tokenOut, vault));
-    /// calls[2] = abi.encodeCall(ISwapper.swapSimple, (0, swapData));
-    /// calls[3] = abi.encodeCall(ISwapper.deposit, (tokenOut, vault, minOut, account));
+    /// calls[0] = abi.encodeCall(IOrchestrator.approve, (tokenIn, router));
+    /// calls[1] = abi.encodeCall(IOrchestrator.approve, (tokenOut, vault));
+    /// calls[2] = abi.encodeCall(IOrchestrator.swapSimple, (0, swapData));
+    /// calls[3] = abi.encodeCall(IOrchestrator.deposit, (tokenOut, vault, minOut, account));
     /// ```
     ///
     /// @param token The ERC20 token to approve.
@@ -99,15 +99,29 @@ interface ISwapper {
     // Native Currency / Wrapped Native
     // ==========================
 
-    /// @notice Wrap the contract's entire native currency balance into a wrapped native token (e.g., WETH, WBNB).
-    /// @dev Wraps `address(this).balance` — never `msg.value` — making it safe inside multicall where
-    /// `msg.value` is the same for all sub-calls. If the balance is zero, this is a no-op (no revert).
+    /// @notice Wrap native currency into a wrapped native token (e.g., WETH, WBNB).
+    /// @dev Uses `address(this).balance` — never `msg.value` — making it safe inside multicall where
+    /// `msg.value` is the same for all sub-calls. If the resolved amount is zero, this is a no-op (no revert).
     ///
-    /// Payable so it works both standalone (`wrap{value: X}(wrappedNative)`) and inside a multicall
+    /// Payable so it works both standalone (`wrap{value: X}(wrappedNative, amount)`) and inside a multicall
     /// where native currency was already deposited to the contract.
     ///
     /// @param wrappedNative The wrapped native token contract address (e.g., WETH on Ethereum, WBNB on BSC).
-    function wrap(address wrappedNative) external payable;
+    /// @param amount The amount of native currency to wrap. Use `type(uint256).max` to wrap
+    ///        the contract's entire native balance.
+    function wrap(address wrappedNative, uint256 amount) external payable;
+
+    /// @notice Wrap native currency and transfer the wrapped tokens to a recipient.
+    /// @dev Wraps native currency and sends the resulting wrapped tokens directly to `to` in one step,
+    /// eliminating the need for a separate `sweep` call. Useful for sending wrapped native directly to
+    /// a vault for `skim`-based deposits.
+    ///
+    /// Uses `address(this).balance` when `amount == type(uint256).max`, making it safe inside multicall.
+    ///
+    /// @param wrappedNative The wrapped native token contract address (e.g., WETH, WBNB).
+    /// @param amount The amount of native currency to wrap. Use `type(uint256).max` to wrap all.
+    /// @param to Recipient address for the wrapped tokens.
+    function wrapTo(address wrappedNative, uint256 amount, address to) external payable;
 
     /// @notice Unwrap a wrapped native token back to native currency.
     /// @dev The native currency remains in the contract after unwrapping — use `sweepNative` to send it
@@ -118,12 +132,23 @@ interface ISwapper {
     ///        the contract's entire wrapped native balance.
     function unwrap(address wrappedNative, uint256 amount) external;
 
+    /// @notice Unwrap a wrapped native token and send the native currency to a recipient.
+    /// @dev Unwraps and transfers native currency directly to `to` in one step, eliminating the need
+    /// for a separate `sweepNative` call.
+    ///
+    /// Reverts with `Orchestrator_NativeTransferFailed` if the recipient rejects the transfer.
+    ///
+    /// @param wrappedNative The wrapped native token contract address.
+    /// @param amount The amount of wrapped native tokens to unwrap. Use `type(uint256).max` to unwrap all.
+    /// @param to Recipient address for the native currency.
+    function unwrapTo(address wrappedNative, uint256 amount, address to) external;
+
     /// @notice Send the contract's entire native currency balance to a recipient.
     /// @dev Acts as the native currency equivalent of `sweep`. Includes a slippage check: reverts with
-    /// `Swapper_InsufficientBalance` if the balance is below `amountMin`. If the balance is zero
+    /// `Orchestrator_InsufficientBalance` if the balance is below `amountMin`. If the balance is zero
     /// (and amountMin is 0), this is a no-op.
     ///
-    /// Reverts with `Swapper_NativeTransferFailed` if the recipient rejects the transfer (e.g., a
+    /// Reverts with `Orchestrator_NativeTransferFailed` if the recipient rejects the transfer (e.g., a
     /// contract without a receive/fallback function or one that reverts).
     ///
     /// @param amountMin Minimum native balance required. Reverts if `address(this).balance < amountMin`.
@@ -139,7 +164,7 @@ interface ISwapper {
     /// @dev Queries `token.balanceOf(address(this))` and deposits the entire amount into the vault
     /// on behalf of `account`. The vault must have been pre-approved via `approve(token, vault)`.
     ///
-    /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with `Orchestrator_InsufficientBalance` if balance < amountMin.
     /// If balance is zero (and amountMin is 0), this is a no-op.
     ///
     /// This function deposits the FULL balance, including any tokens that were already in the contract
@@ -161,7 +186,7 @@ interface ISwapper {
     /// overestimates the repay amount. Use `type(uint256).max` to repay all debt — it is passed
     /// through to the vault which resolves it to the exact outstanding amount.
     ///
-    /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with `Orchestrator_InsufficientBalance` if balance < amountMin.
     ///
     /// @param token The borrowed asset (same as the vault's underlying).
     /// @param vault The Euler lending vault where debt is tracked.
@@ -196,7 +221,7 @@ interface ISwapper {
     /// @dev Sends the entire `token.balanceOf(address(this))` to `to`. Use this to extract swap output
     /// when the output should go directly to the user rather than into a vault.
     ///
-    /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with `Orchestrator_InsufficientBalance` if balance < amountMin.
     /// If balance is zero (and amountMin is 0), this is a no-op.
     ///
     /// @param token The ERC20 token to transfer.
@@ -208,8 +233,8 @@ interface ISwapper {
     // Multicall
     // ==========================
 
-    /// @notice Execute multiple Swapper functions in a single transaction.
-    /// @dev Each element in `calls` is an ABI-encoded call to a Swapper function. Calls are executed
+    /// @notice Execute multiple Orchestrator functions in a single transaction.
+    /// @dev Each element in `calls` is an ABI-encoded call to an Orchestrator function. Calls are executed
     /// sequentially via `address(this).call()`. If any call reverts, the entire multicall reverts with
     /// the inner revert reason.
     ///
@@ -219,19 +244,19 @@ interface ISwapper {
     /// **Typical multicall pattern:**
     /// ```
     /// bytes[] memory calls = new bytes[](4);
-    /// calls[0] = abi.encodeCall(ISwapper.approve, (tokenIn, router));
-    /// calls[1] = abi.encodeCall(ISwapper.approve, (tokenOut, vault));
-    /// calls[2] = abi.encodeCall(ISwapper.swapSimple, (0, swapData));
-    /// calls[3] = abi.encodeCall(ISwapper.deposit, (tokenOut, vault, minOut, account));
-    /// swapper.multicall(calls);
+    /// calls[0] = abi.encodeCall(IOrchestrator.approve, (tokenIn, router));
+    /// calls[1] = abi.encodeCall(IOrchestrator.approve, (tokenOut, vault));
+    /// calls[2] = abi.encodeCall(IOrchestrator.swapSimple, (0, swapData));
+    /// calls[3] = abi.encodeCall(IOrchestrator.deposit, (tokenOut, vault, minOut, account));
+    /// orchestrator.multicall(calls);
     /// ```
     ///
     /// **Native currency multicall:**
     /// ```
     /// bytes[] memory calls = new bytes[](2);
-    /// calls[0] = abi.encodeCall(ISwapper.swapSimple, (1 ether, swapData));
-    /// calls[1] = abi.encodeCall(ISwapper.deposit, (tokenOut, vault, minOut, account));
-    /// swapper.multicall{value: 1 ether}(calls);
+    /// calls[0] = abi.encodeCall(IOrchestrator.swapSimple, (1 ether, swapData));
+    /// calls[1] = abi.encodeCall(IOrchestrator.deposit, (tokenOut, vault, minOut, account));
+    /// orchestrator.multicall{value: 1 ether}(calls);
     /// ```
     ///
     /// @param calls Array of ABI-encoded function calls to execute on this contract.

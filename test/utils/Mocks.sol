@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "../../contracts/interfaces/IERC20.sol";
 import {IPermit2} from "../../contracts/interfaces/IPermit2.sol";
-import {Swapper} from "../../contracts/Swapper.sol";
+import {Orchestrator} from "../../contracts/Orchestrator.sol";
 
 // ============ Token Mocks ============
 
@@ -119,6 +119,42 @@ contract MockERC20RequiresZeroAllowance {
     }
 }
 
+/// @dev ERC20 with ERC-2612 permit support (mock — skips ECDSA, just sets allowance)
+contract MockERC20Permit is MockERC20 {
+    constructor(string memory _name, string memory _symbol, uint8 _decimals) MockERC20(_name, _symbol, _decimals) {}
+
+    function permit(address owner, address spender, uint256 value, uint256, uint8, bytes32, bytes32) external {
+        allowance[owner][spender] = value;
+    }
+}
+
+/// @dev ERC20 with Dai-style permit support (mock — skips ECDSA, just sets allowance)
+contract MockDaiPermit is MockERC20 {
+    constructor(string memory _name, string memory _symbol, uint8 _decimals) MockERC20(_name, _symbol, _decimals) {}
+
+    function permit(address holder, address spender, uint256, uint256, bool allowed, uint8, bytes32, bytes32) external {
+        allowance[holder][spender] = allowed ? type(uint256).max : 0;
+    }
+}
+
+/// @dev ERC-2612 permit that always reverts (for try/catch testing)
+contract MockERC20PermitReverting is MockERC20 {
+    constructor() MockERC20("Reverting", "REV", 18) {}
+
+    function permit(address, address, uint256, uint256, uint8, bytes32, bytes32) external pure {
+        revert("permit reverted");
+    }
+}
+
+/// @dev Dai-style permit that always reverts (for try/catch testing)
+contract MockDaiPermitReverting is MockERC20 {
+    constructor() MockERC20("Reverting Dai", "REVDAI", 18) {}
+
+    function permit(address, address, uint256, uint256, bool, uint8, bytes32, bytes32) external pure {
+        revert("permit reverted");
+    }
+}
+
 // ============ WETH Mock ============
 
 contract MockWETH {
@@ -172,6 +208,7 @@ contract MockWETH {
 
 contract MockPermit2 {
     mapping(address => mapping(address => mapping(address => uint160))) public allowance;
+    bool public shouldRevertBatch;
 
     function permit(address owner, IPermit2.PermitSingle memory permitSingle, bytes calldata) external {
         allowance[permitSingle.details.token][owner][permitSingle.spender] = permitSingle.details.amount;
@@ -189,6 +226,61 @@ contract MockPermit2 {
 
     function approve(address token, address from, address spender, uint160 amount) external {
         allowance[token][from][spender] = amount;
+    }
+
+    function setShouldRevertBatch(bool _shouldRevert) external {
+        shouldRevertBatch = _shouldRevert;
+    }
+
+    function permitTransferFrom(
+        IPermit2.PermitBatchTransferFrom memory permit,
+        IPermit2.SignatureTransferDetails[] calldata transferDetails,
+        address owner,
+        bytes calldata
+    ) external {
+        if (shouldRevertBatch) revert("MockPermit2: batch reverted");
+
+        require(permit.permitted.length == transferDetails.length, "MockPermit2: length mismatch");
+
+        for (uint256 i; i < transferDetails.length; i++) {
+            address token = permit.permitted[i].token;
+            uint256 amount = transferDetails[i].requestedAmount;
+            address to = transferDetails[i].to;
+
+            (bool success,) =
+                token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, to, amount));
+            require(success, "MockPermit2: transfer failed");
+        }
+    }
+}
+
+/// @dev Mock for Permit2 SignatureTransfer batch — transfers tokens from owner on permitTransferFrom
+contract MockPermit2SignatureTransfer {
+    bool public shouldRevert;
+
+    function setShouldRevert(bool _shouldRevert) external {
+        shouldRevert = _shouldRevert;
+    }
+
+    function permitTransferFrom(
+        IPermit2.PermitBatchTransferFrom memory permit,
+        IPermit2.SignatureTransferDetails[] calldata transferDetails,
+        address owner,
+        bytes calldata
+    ) external {
+        if (shouldRevert) revert("MockPermit2SignatureTransfer: reverted");
+
+        require(permit.permitted.length == transferDetails.length, "MockPermit2SignatureTransfer: length mismatch");
+
+        for (uint256 i; i < transferDetails.length; i++) {
+            address token = permit.permitted[i].token;
+            uint256 amount = transferDetails[i].requestedAmount;
+            address to = transferDetails[i].to;
+
+            (bool success,) =
+                token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, to, amount));
+            require(success, "MockPermit2SignatureTransfer: transfer failed");
+        }
     }
 }
 
@@ -287,15 +379,15 @@ contract RejectETH {
     }
 }
 
-/// @dev Malicious token that reenters the swapper on transfer
+/// @dev Malicious token that reenters the orchestrator on transfer
 contract ReentrantToken {
-    Swapper public target;
+    Orchestrator public target;
     bool public attacking;
 
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
-    function setTarget(Swapper _target) external {
+    function setTarget(Orchestrator _target) external {
         target = _target;
     }
 

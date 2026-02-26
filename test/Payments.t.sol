@@ -8,10 +8,23 @@ import {IPayments} from "../contracts/interfaces/IPayments.sol";
 import {EthereumVaultConnector} from "ethereum-vault-connector/EthereumVaultConnector.sol";
 import {IEVC} from "ethereum-vault-connector/interfaces/IEthereumVaultConnector.sol";
 import {IERC20} from "../contracts/interfaces/IERC20.sol";
+import {IPermit2} from "../contracts/interfaces/IPermit2.sol";
 
-import {MockERC20, MockERC20NoReturnValue, MockWETH, MockPermit2, RejectETH} from "./utils/Mocks.sol";
+import {
+    MockERC20,
+    MockERC20NoReturnValue,
+    MockERC20Permit,
+    MockDaiPermit,
+    MockERC20PermitReverting,
+    MockDaiPermitReverting,
+    MockWETH,
+    MockPermit2,
+    RejectETH
+} from "./utils/Mocks.sol";
 
 contract PaymentsTest is Test {
+    address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+
     EthereumVaultConnector evc;
     Payments payments;
     MockPermit2 permit2Mock;
@@ -24,8 +37,13 @@ contract PaymentsTest is Test {
 
     function setUp() public {
         evc = new EthereumVaultConnector();
-        permit2Mock = new MockPermit2();
-        payments = new Payments(address(evc), address(permit2Mock));
+
+        // Deploy mock permit2 code at the canonical address
+        MockPermit2 permit2Impl = new MockPermit2();
+        vm.etch(PERMIT2, address(permit2Impl).code);
+        permit2Mock = MockPermit2(PERMIT2);
+
+        payments = new Payments(address(evc));
         token = new MockERC20("Test Token", "TST", 18);
         weth = new MockWETH();
 
@@ -146,17 +164,104 @@ contract PaymentsTest is Test {
     }
 
     // ==============================
-    // Permit2 Signature Transfer Tests
+    // Permit Utility Tests
     // ==============================
 
-    function test_transferWithPermit2() public {
-        vm.prank(user);
-        token.approve(address(permit2Mock), type(uint256).max);
+    function test_permit_setsAllowance() public {
+        MockERC20Permit permitToken = new MockERC20Permit("Permit Token", "PT", 18);
+        permitToken.mint(user, 1000e18);
 
+        payments.permit(address(permitToken), user, 100e18, block.timestamp + 1 hours, 0, bytes32(0), bytes32(0));
+
+        assertEq(permitToken.allowance(user, address(payments)), 100e18);
+    }
+
+    function test_permitDai_setsAllowance() public {
+        MockDaiPermit daiToken = new MockDaiPermit("Dai Permit", "DAI", 18);
+        daiToken.mint(user, 1000e18);
+
+        payments.permitDai(address(daiToken), user, 0, block.timestamp + 1 hours, true, 0, bytes32(0), bytes32(0));
+
+        assertEq(daiToken.allowance(user, address(payments)), type(uint256).max);
+    }
+
+    function test_permit2Permit_setsAllowance() public {
         vm.prank(user);
-        payments.transferWithPermit2(address(token), receiver, 100e18, 0, block.timestamp + 1 hours, "");
+        token.approve(PERMIT2, type(uint256).max);
+
+        payments.permit2Permit(address(token), user, 100e18, 0, block.timestamp + 1 hours, "");
+
+        // MockPermit2 stores allowance[token][owner][spender]
+        assertEq(permit2Mock.allowance(address(token), user, address(payments)), 100e18);
+    }
+
+    function test_permit_tryCatch_doesNotRevert() public {
+        MockERC20PermitReverting revertingToken = new MockERC20PermitReverting();
+
+        // Should not revert despite the permit call reverting
+        payments.permit(address(revertingToken), user, 100e18, block.timestamp + 1 hours, 0, bytes32(0), bytes32(0));
+    }
+
+    function test_permitDai_tryCatch_doesNotRevert() public {
+        MockDaiPermitReverting revertingDai = new MockDaiPermitReverting();
+
+        // Should not revert despite the permit call reverting
+        payments.permitDai(address(revertingDai), user, 0, block.timestamp + 1 hours, true, 0, bytes32(0), bytes32(0));
+    }
+
+    function test_permit2Permit_tryCatch_doesNotRevert() public {
+        // Call with an address that doesn't implement permit — the try/catch should absorb it
+        payments.permit2Permit(address(token), user, 100e18, 0, block.timestamp + 1 hours, "");
+    }
+
+    function test_permit_thenTransfer() public {
+        MockERC20Permit permitToken = new MockERC20Permit("Permit Token", "PT", 18);
+        permitToken.mint(user, 1000e18);
+
+        // Step 1: permit (anyone can call — signature is the auth)
+        payments.permit(address(permitToken), user, 100e18, block.timestamp + 1 hours, 0, bytes32(0), bytes32(0));
+
+        // Step 2: transfer (EVC-authenticated)
+        vm.prank(user);
+        payments.transfer(address(permitToken), receiver, 100e18);
+
+        assertEq(permitToken.balanceOf(receiver), 100e18);
+    }
+
+    function test_permit2Permit_thenTransfer() public {
+        vm.prank(user);
+        token.approve(PERMIT2, type(uint256).max);
+
+        // Step 1: permit2Permit (anyone can call — signature is the auth)
+        payments.permit2Permit(address(token), user, 100e18, 0, block.timestamp + 1 hours, "");
+
+        // Step 2: transfer (EVC-authenticated, uses Permit2 fallback)
+        vm.prank(user);
+        payments.transfer(address(token), receiver, 100e18);
 
         assertEq(token.balanceOf(receiver), 100e18);
+    }
+
+    function test_permit_thenTransfer_inBatch() public {
+        MockERC20Permit permitToken = new MockERC20Permit("Permit Token", "PT", 18);
+        permitToken.mint(user, 1000e18);
+
+        // Permit is called outside the EVC batch (unauthenticated)
+        payments.permit(address(permitToken), user, 100e18, block.timestamp + 1 hours, 0, bytes32(0), bytes32(0));
+
+        // Transfer via EVC batch (authenticated)
+        IEVC.BatchItem[] memory items = new IEVC.BatchItem[](1);
+        items[0] = IEVC.BatchItem({
+            targetContract: address(payments),
+            onBehalfOfAccount: user,
+            value: 0,
+            data: abi.encodeCall(Payments.transfer, (address(permitToken), receiver, 100e18))
+        });
+
+        vm.prank(user);
+        evc.batch(items);
+
+        assertEq(permitToken.balanceOf(receiver), 100e18);
     }
 
     // ==============================
@@ -286,12 +391,12 @@ contract PaymentsTest is Test {
 
     function test_constructor_setsImmutables() public view {
         assertEq(payments.EVC(), address(evc));
-        assertEq(payments.permit2(), address(permit2Mock));
+        assertEq(payments.permit2(), PERMIT2);
     }
 
     function test_constructor_revertsOnZeroEVC() public {
         vm.expectRevert();
-        new Payments(address(0), address(permit2Mock));
+        new Payments(address(0));
     }
 
     // ==============================
@@ -433,18 +538,60 @@ contract PaymentsTest is Test {
     }
 
     // ==============================
-    // Permit2 disabled (address(0))
+    // Permit2 Batch Transfer Tests
     // ==============================
 
-    function test_transfer_withoutPermit2() public {
-        Payments paymentsNoPermit2 = new Payments(address(evc), address(0));
+    function test_permit2TransferFrom_basic() public {
+        MockERC20 tokenB = new MockERC20("Token B", "TKNB", 18);
 
-        vm.prank(user);
-        token.approve(address(paymentsNoPermit2), 100e18);
+        // Fund user with both tokens and approve permit2 to spend them
+        vm.startPrank(user);
+        token.approve(PERMIT2, type(uint256).max);
+        tokenB.approve(PERMIT2, type(uint256).max);
+        vm.stopPrank();
+        tokenB.mint(user, 50e18);
 
+        // Build batch permit
+        IPermit2.TokenPermissions[] memory permitted = new IPermit2.TokenPermissions[](2);
+        permitted[0] = IPermit2.TokenPermissions({token: address(token), amount: 100e18});
+        permitted[1] = IPermit2.TokenPermissions({token: address(tokenB), amount: 50e18});
+
+        IPermit2.PermitBatchTransferFrom memory batchPermit = IPermit2.PermitBatchTransferFrom({
+            permitted: permitted,
+            nonce: 0,
+            deadline: block.timestamp + 1 hours
+        });
+
+        IPermit2.SignatureTransferDetails[] memory details = new IPermit2.SignatureTransferDetails[](2);
+        details[0] = IPermit2.SignatureTransferDetails({to: receiver, requestedAmount: 100e18});
+        details[1] = IPermit2.SignatureTransferDetails({to: receiver, requestedAmount: 50e18});
+
+        // EVC-authenticated: owner derived from _msgSender()
         vm.prank(user);
-        paymentsNoPermit2.transfer(address(token), receiver, 100e18);
+        payments.permit2TransferFrom(batchPermit, details, "");
 
         assertEq(token.balanceOf(receiver), 100e18);
+        assertEq(tokenB.balanceOf(receiver), 50e18);
+    }
+
+    function test_permit2TransferFrom_revertsOnFailure() public {
+        // Set the mock to revert on batch calls
+        permit2Mock.setShouldRevertBatch(true);
+
+        IPermit2.TokenPermissions[] memory permitted = new IPermit2.TokenPermissions[](1);
+        permitted[0] = IPermit2.TokenPermissions({token: address(token), amount: 100e18});
+
+        IPermit2.PermitBatchTransferFrom memory batchPermit = IPermit2.PermitBatchTransferFrom({
+            permitted: permitted,
+            nonce: 0,
+            deadline: block.timestamp + 1 hours
+        });
+
+        IPermit2.SignatureTransferDetails[] memory details = new IPermit2.SignatureTransferDetails[](1);
+        details[0] = IPermit2.SignatureTransferDetails({to: receiver, requestedAmount: 100e18});
+
+        vm.prank(user);
+        vm.expectRevert();
+        payments.permit2TransferFrom(batchPermit, details, "");
     }
 }

@@ -1,16 +1,22 @@
 # Euler Portal — Supported Operations
 
-Reference for all composable flows supported by Payments + Swapper + EVC batching.
+Reference for all composable flows supported by Payments + Orchestrator + EVC batching.
 
 ## Primitives
 
-**Payments** (EVC-authenticated):
+**Payments** (EVC-authenticated transfers):
 - `transfer(token, receiver, amount)` — pull ERC20 from user, send to receiver
 - `wrapAndTransfer(weth, receiver, amount)` — wrap native → WETH, send to receiver
 - `unwrapAndTransfer(weth, receiver, amount)` — pull WETH, unwrap, send native
 - `transferNative(receiver)` — forward `msg.value` as native
+- `permit2TransferFrom(permit, transferDetails, signature)` — batch-pull tokens via Permit2 SignatureTransfer
 
-**Swapper** (untrusted, composable via multicall):
+**Payments** (permit utilities — unauthenticated, signature-based):
+- `permit(token, owner, amount, deadline, v, r, s)` — ERC-2612 permit to this contract
+- `permitDai(token, owner, nonce, expiry, allowed, v, r, s)` — Dai-style permit to this contract
+- `permit2Permit(token, owner, amount, nonce, deadline, signature)` — Permit2 AllowanceTransfer permit to this contract
+
+**Orchestrator** (untrusted, composable via multicall):
 - `approve(token, spender)` — max-approve with cache (must precede any pull-based operation)
 - `swapSimple(value, data)` — execute swap, leave output in contract
 - `deposit(token, vault, amountMin, account)` — deposit full balance to vault
@@ -18,8 +24,10 @@ Reference for all composable flows supported by Payments + Swapper + EVC batchin
 - `repayAndDeposit(token, vault, repayAmount, amountMin, account)` — repay + deposit remainder
 - `sweep(token, amountMin, to)` — send full ERC20 balance to recipient
 - `sweepNative(amountMin, to)` — send full native balance to recipient
-- `wrap(wrappedNative)` — wrap native balance → wrapped native
+- `wrap(wrappedNative, amount)` — wrap native balance → wrapped native (`type(uint256).max` = all)
+- `wrapTo(wrappedNative, amount, to)` — wrap native and transfer wrapped tokens to recipient
 - `unwrap(wrappedNative, amount)` — unwrap wrapped native → native
+- `unwrapTo(wrappedNative, amount, to)` — unwrap and send native currency to recipient
 - `multicall(calls)` — compose any of the above in sequence
 
 **Vault** (called directly via EVC batch):
@@ -44,8 +52,8 @@ Swap any input asset (including native) and deposit the output into any vault.
 
 ```solidity
 // EVC batch
-items[0] = Payments.transfer(tokenIn, swapper, amount);
-items[1] = Swapper.multicall([
+items[0] = Payments.transfer(tokenIn, orchestrator, amount);
+items[1] = Orchestrator.multicall([
     approve(tokenIn, router),
     approve(tokenOut, vault),
     swapSimple(0, data),
@@ -57,7 +65,7 @@ items[1] = Swapper.multicall([
 
 ```solidity
 // EVC batch
-items[0] = Swapper.multicall{value: X}([
+items[0] = Orchestrator.multicall{value: X}([
     approve(tokenOut, vault),
     swapSimple(X, data),
     deposit(tokenOut, vault, minOut, account)
@@ -76,8 +84,8 @@ Swap any input asset (including native) and repay debt on any vault. Remainder i
 
 ```solidity
 // EVC batch
-items[0] = Payments.transfer(tokenIn, swapper, amount);
-items[1] = Swapper.multicall([
+items[0] = Payments.transfer(tokenIn, orchestrator, amount);
+items[1] = Orchestrator.multicall([
     approve(tokenIn, router),
     approve(debtToken, debtVault),
     swapSimple(0, data),
@@ -89,7 +97,7 @@ items[1] = Swapper.multicall([
 
 ```solidity
 // EVC batch
-items[0] = Swapper.multicall{value: X}([
+items[0] = Orchestrator.multicall{value: X}([
     approve(debtToken, debtVault),
     swapSimple(X, data),
     repayAndDeposit(debtToken, debtVault, type(uint256).max, minOut, account)
@@ -108,8 +116,8 @@ Withdraw from any vault and swap to any output asset (including native).
 
 ```solidity
 // EVC batch
-items[0] = vault.withdraw(amount, swapper, account);
-items[1] = Swapper.multicall([
+items[0] = vault.withdraw(amount, orchestrator, account);
+items[1] = Orchestrator.multicall([
     approve(withdrawnToken, router),
     swapSimple(0, data),
     sweep(tokenOut, minOut, user)
@@ -120,8 +128,8 @@ items[1] = Swapper.multicall([
 
 ```solidity
 // EVC batch
-items[0] = vault.withdraw(amount, swapper, account);
-items[1] = Swapper.multicall([
+items[0] = vault.withdraw(amount, orchestrator, account);
+items[1] = Orchestrator.multicall([
     approve(withdrawnToken, router),
     swapSimple(0, data),                          // → wrapped native
     unwrap(WETH, type(uint256).max),
@@ -129,7 +137,7 @@ items[1] = Swapper.multicall([
 ]);
 ```
 
-The vault's `withdraw` is called directly via EVC batch — the Swapper never invokes it.
+The vault's `withdraw` is called directly via EVC batch — the Orchestrator never invokes it.
 
 ---
 
@@ -141,8 +149,8 @@ Borrow from any vault and swap to any output asset (including native).
 
 ```solidity
 // EVC batch
-items[0] = debtVault.borrow(amount, swapper);
-items[1] = Swapper.multicall([
+items[0] = debtVault.borrow(amount, orchestrator);
+items[1] = Orchestrator.multicall([
     approve(debtToken, router),
     swapSimple(0, data),
     sweep(tokenOut, minOut, user)
@@ -153,8 +161,8 @@ items[1] = Swapper.multicall([
 
 ```solidity
 // EVC batch
-items[0] = debtVault.borrow(amount, swapper);
-items[1] = Swapper.multicall([
+items[0] = debtVault.borrow(amount, orchestrator);
+items[1] = Orchestrator.multicall([
     approve(debtToken, router),
     swapSimple(0, data),                          // → wrapped native
     unwrap(WETH, type(uint256).max),
@@ -174,8 +182,8 @@ Combine borrow/withdraw with swap and deposit/repay for leveraged position manag
 
 ```solidity
 // EVC batch
-items[0] = debtVault.borrow(amount, swapper);
-items[1] = Swapper.multicall([
+items[0] = debtVault.borrow(amount, orchestrator);
+items[1] = Orchestrator.multicall([
     approve(debtToken, router),
     approve(collateralToken, collateralVault),
     swapSimple(0, data),
@@ -187,8 +195,8 @@ items[1] = Swapper.multicall([
 
 ```solidity
 // EVC batch
-items[0] = collateralVault.withdraw(amount, swapper, account);
-items[1] = Swapper.multicall([
+items[0] = collateralVault.withdraw(amount, orchestrator, account);
+items[1] = Orchestrator.multicall([
     approve(collateralToken, router),
     approve(debtToken, debtVault),
     swapSimple(0, data),
@@ -206,13 +214,13 @@ Open a leveraged position by depositing margin in either the collateral or debt 
 
 ### Case A: User pays with the debt (borrow) currency
 
-The Swapper receives both the user's payment and the borrowed amount of the same token. Swap the entire balance `(payAmount + borrowAmount)` to collateral in one swap.
+The Orchestrator receives both the user's payment and the borrowed amount of the same token. Swap the entire balance `(payAmount + borrowAmount)` to collateral in one swap.
 
 ```solidity
 // EVC batch
-items[0] = Payments.transfer(debtToken, swapper, payAmount);
-items[1] = debtVault.borrow(borrowAmount, swapper);
-items[2] = Swapper.multicall([
+items[0] = Payments.transfer(debtToken, orchestrator, payAmount);
+items[1] = debtVault.borrow(borrowAmount, orchestrator);
+items[2] = Orchestrator.multicall([
     approve(debtToken, router),
     approve(collateralToken, collateralVault),
     swapSimple(0, data),
@@ -220,15 +228,15 @@ items[2] = Swapper.multicall([
 ]);
 ```
 
-After steps 0+1, the Swapper holds `payAmount + borrowAmount` of debtToken. The swap converts ALL of it to collateralToken and deposit picks up the full balance.
+After steps 0+1, the Orchestrator holds `payAmount + borrowAmount` of debtToken. The swap converts ALL of it to collateralToken and deposit picks up the full balance.
 
 **With native (debt = wrapped native, user pays native):**
 
 ```solidity
 // EVC batch
-items[0] = Payments.wrapAndTransfer{value: payAmount}(WETH, swapper, payAmount);
-items[1] = debtVault.borrow(borrowAmount, swapper);
-items[2] = Swapper.multicall([
+items[0] = Payments.wrapAndTransfer{value: payAmount}(WETH, orchestrator, payAmount);
+items[1] = debtVault.borrow(borrowAmount, orchestrator);
+items[2] = Orchestrator.multicall([
     approve(WETH, router),
     approve(collateralToken, collateralVault),
     swapSimple(0, data),
@@ -238,13 +246,13 @@ items[2] = Swapper.multicall([
 
 ### Case B: User pays with the collateral currency
 
-The Swapper receives the user's collateralToken AND the borrowed debtToken. Swap ONLY the debtToken to collateralToken, then deposit the full collateralToken balance (user's original + swap output).
+The Orchestrator receives the user's collateralToken AND the borrowed debtToken. Swap ONLY the debtToken to collateralToken, then deposit the full collateralToken balance (user's original + swap output).
 
 ```solidity
 // EVC batch
-items[0] = Payments.transfer(collateralToken, swapper, payAmount);
-items[1] = debtVault.borrow(borrowAmount, swapper);
-items[2] = Swapper.multicall([
+items[0] = Payments.transfer(collateralToken, orchestrator, payAmount);
+items[1] = debtVault.borrow(borrowAmount, orchestrator);
+items[2] = Orchestrator.multicall([
     approve(debtToken, router),
     approve(collateralToken, collateralVault),
     swapSimple(0, data),                                         // swap ONLY debtToken → collateralToken
@@ -252,15 +260,15 @@ items[2] = Swapper.multicall([
 ]);
 ```
 
-After steps 0+1, the Swapper holds `payAmount` of collateralToken + `borrowAmount` of debtToken. The swap data encodes swapping only the debtToken. After swapSimple, the Swapper holds `payAmount + swapOutput` of collateralToken. `deposit()` picks up the full balance.
+After steps 0+1, the Orchestrator holds `payAmount` of collateralToken + `borrowAmount` of debtToken. The swap data encodes swapping only the debtToken. After swapSimple, the Orchestrator holds `payAmount + swapOutput` of collateralToken. `deposit()` picks up the full balance.
 
 **With native (collateral = wrapped native, user pays native):**
 
 ```solidity
 // EVC batch
-items[0] = Payments.wrapAndTransfer{value: payAmount}(WETH, swapper, payAmount);
-items[1] = debtVault.borrow(borrowAmount, swapper);
-items[2] = Swapper.multicall([
+items[0] = Payments.wrapAndTransfer{value: payAmount}(WETH, orchestrator, payAmount);
+items[1] = debtVault.borrow(borrowAmount, orchestrator);
+items[2] = Orchestrator.multicall([
     approve(debtToken, router),
     approve(WETH, collateralVault),
     swapSimple(0, data),                                         // debtToken → WETH
@@ -283,4 +291,4 @@ items[2] = Swapper.multicall([
 | Zap (pay with debt) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapSimple + deposit |
 | Zap (pay with collateral) | Yes (wrapAndTransfer) | N/A | transfer/borrow + swapSimple + deposit |
 
-All scenarios are composable from existing Payments + Swapper + EVC batch primitives with no code changes required.
+All scenarios are composable from existing Payments + Orchestrator + EVC batch primitives with no code changes required.

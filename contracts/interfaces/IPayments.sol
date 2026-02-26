@@ -2,20 +2,25 @@
 
 pragma solidity >=0.8.0;
 
+import {IPermit2} from "./IPermit2.sol";
+
 /// @title IPayments
 /// @notice Interface for the Payments contract — an EVC-authenticated payment pass-through.
 /// @dev Payments pulls ERC20 tokens from an EVC-authenticated sender and forwards them to a receiver.
 /// It is stateless (no stored balances, no admin) and designed to be composed in EVC batches alongside
-/// the Swapper for atomic multi-step flows (e.g., pull tokens → swap → deposit into vault).
+/// the Orchestrator for atomic multi-step flows (e.g., pull tokens → swap → deposit into vault).
 ///
-/// All functions route through the EVC via `callThroughEVC`, meaning the sender is always resolved
+/// Transfer functions route through the EVC via `callThroughEVC`, meaning the sender is always resolved
 /// as the EVC-authenticated account (owner or authorized operator), never raw `msg.sender`.
+///
+/// Standalone permit utilities (`permit`, `permitDai`, `permit2Permit`) set allowances without
+/// transferring tokens. They are unauthenticated — the signature is the authorization. Designed
+/// to be composed as a preceding batch item before `transfer()`.
 ///
 /// Transfer methods try Permit2 first, then fall back to standard `transferFrom`. This means the
 /// sender can approve either this contract directly or the Permit2 contract.
 ///
-/// Permit calls (`transferWithPermit`, `transferWithDaiPermit`, `transferWithPermit2`) use try/catch
-/// so that front-running or pre-existing approvals do not revert the transaction.
+/// Permit calls use try/catch so that front-running or pre-existing approvals do not revert the batch.
 ///
 /// Receiver validation rejects `address(0)` and EVC sub-accounts whose private keys are unknown,
 /// preventing tokens from being permanently locked.
@@ -36,7 +41,7 @@ interface IPayments {
 
     // --- Events ---
 
-    /// @notice Emitted on every successful ERC20 transfer (including permit variants).
+    /// @notice Emitted on every successful ERC20 transfer.
     /// @param token The ERC20 token transferred.
     /// @param from The authenticated sender whose tokens were pulled.
     /// @param receiver The recipient who received the tokens.
@@ -71,7 +76,7 @@ interface IPayments {
     /// @dev Tries Permit2 first, falls back to standard `transferFrom`. The sender must have approved
     /// either this contract or the Permit2 contract to spend the token.
     ///
-    /// Typical usage in an EVC batch: pull tokens from the user to a Swapper or vault address.
+    /// Typical usage in an EVC batch: pull tokens from the user to a Orchestrator or vault address.
     ///
     /// Reverts with `E_InvalidReceiver` if receiver is address(0) or a non-owner sub-account.
     /// Reverts with `E_InvalidAmount` if amount is 0.
@@ -82,26 +87,27 @@ interface IPayments {
     function transfer(address token, address receiver, uint256 amount) external;
 
     // ==========================
-    // Permit + Transfer
+    // Permit Utilities
     // ==========================
 
-    /// @notice Execute an ERC-2612 permit to grant this contract an allowance, then transfer tokens.
-    /// @dev The permit call is wrapped in try/catch — if it fails (front-run, already approved, non-compliant
-    /// token), the function still attempts the transfer using any existing allowance.
+    /// @notice Execute an ERC-2612 permit to grant this contract an allowance.
+    /// @dev The permit call is wrapped in try/catch — if it fails (front-run, already approved,
+    /// non-compliant token), the function silently succeeds so that a subsequent `transfer()` in
+    /// the same EVC batch can proceed using any existing allowance.
     ///
-    /// Use this to enable gasless approvals: the user signs a permit off-chain, and the relayer
-    /// submits the permit + transfer in a single EVC batch item.
+    /// This function is unauthenticated — the permit signature is the authorization.
+    /// The spender is always `address(this)`.
     ///
     /// @param token The ERC20 token address. Must implement ERC-2612 `permit()`.
-    /// @param receiver The recipient address.
-    /// @param amount The amount to transfer (also used as the permit approval amount).
-    /// @param deadline The permit signature deadline (block.timestamp must be <= deadline).
+    /// @param owner The token owner who signed the permit.
+    /// @param amount The approval amount.
+    /// @param deadline The permit signature deadline.
     /// @param v The recovery byte of the permit signature.
     /// @param r The first 32 bytes of the permit signature.
     /// @param s The second 32 bytes of the permit signature.
-    function transferWithPermit(
+    function permit(
         address token,
-        address receiver,
+        address owner,
         uint256 amount,
         uint256 deadline,
         uint8 v,
@@ -109,25 +115,20 @@ interface IPayments {
         bytes32 s
     ) external;
 
-    /// @notice Execute a Dai-style permit, then transfer tokens.
-    /// @dev Dai uses a different permit signature scheme: `(holder, spender, nonce, expiry, allowed)`
-    /// instead of the standard ERC-2612 `(owner, spender, value, deadline)`.
-    ///
-    /// The permit call is wrapped in try/catch for the same resilience as `transferWithPermit`.
+    /// @notice Execute a Dai-style permit to grant this contract an allowance.
+    /// @dev Same try/catch resilience as `permit()`. The spender is always `address(this)`.
     ///
     /// @param token The Dai token address (or any token implementing the Dai permit interface).
-    /// @param receiver The recipient address.
-    /// @param amount The amount to transfer.
-    /// @param nonce The Dai permit nonce for the sender.
+    /// @param owner The token owner who signed the permit.
+    /// @param nonce The Dai permit nonce.
     /// @param expiry The Dai permit expiry timestamp.
     /// @param allowed Whether to allow (true) or disallow (false) spending.
     /// @param v The recovery byte of the permit signature.
     /// @param r The first 32 bytes of the permit signature.
     /// @param s The second 32 bytes of the permit signature.
-    function transferWithDaiPermit(
+    function permitDai(
         address token,
-        address receiver,
-        uint256 amount,
+        address owner,
         uint256 nonce,
         uint256 expiry,
         bool allowed,
@@ -136,22 +137,18 @@ interface IPayments {
         bytes32 s
     ) external;
 
-    /// @notice Execute a Permit2 signature-based permit, then transfer tokens.
-    /// @dev Sets a Permit2 `AllowanceTransfer` allowance for this contract via the provided signature,
-    /// then transfers via Permit2. If the Permit2 address is zero, skips the permit step and attempts
-    /// a direct transfer.
-    ///
-    /// The permit call is wrapped in try/catch for the same resilience as `transferWithPermit`.
+    /// @notice Execute a Permit2 AllowanceTransfer permit to grant this contract a Permit2 allowance.
+    /// @dev Same try/catch resilience as `permit()`. The spender is always `address(this)`.
     ///
     /// @param token The ERC20 token address.
-    /// @param receiver The recipient address.
-    /// @param amount The amount to transfer.
+    /// @param owner The token owner who signed the Permit2 permit.
+    /// @param amount The allowance amount.
     /// @param nonce The Permit2 nonce.
     /// @param deadline The Permit2 signature deadline.
-    /// @param signature The Permit2 signature bytes (EIP-712 signed by the token owner).
-    function transferWithPermit2(
+    /// @param signature The Permit2 signature bytes.
+    function permit2Permit(
         address token,
-        address receiver,
+        address owner,
         uint256 amount,
         uint256 nonce,
         uint256 deadline,
@@ -166,7 +163,7 @@ interface IPayments {
     /// @dev Wraps exactly `amount` of native currency into WETH/WBNB and sends the wrapped tokens to
     /// the receiver. Any excess `msg.value` beyond `amount` is refunded to the authenticated sender.
     ///
-    /// Typical usage: in an EVC batch, wrap user's native currency and send to the Swapper contract
+    /// Typical usage: in an EVC batch, wrap user's native currency and send to the Orchestrator contract
     /// so it can be used in a swap.
     ///
     /// Reverts with `E_InsufficientMsgValue` if `msg.value < amount`.
@@ -194,6 +191,30 @@ interface IPayments {
     ///
     /// @param receiver The recipient of the native currency.
     function transferNative(address receiver) external payable;
+
+    // ==========================
+    // Permit2 Batch Transfer
+    // ==========================
+
+    /// @notice Pull tokens via Permit2 SignatureTransfer (batch) and forward to specified recipients.
+    /// @dev The user signs a single off-chain EIP-712 signature authorising the transfer of multiple tokens.
+    /// Each `transferDetails` entry specifies a recipient and amount. Uses the contract's hard-coded
+    /// Permit2 address.
+    ///
+    /// The token owner is resolved via `_msgSender()` (EVC-authenticated), consistent with other
+    /// transfer functions. The Permit2 signature must be from the authenticated sender.
+    ///
+    /// This enables batch token pulls in a single EVC batch item — e.g., pull USDC + WETH to an
+    /// Orchestrator in one step, then swap and deposit in the next.
+    ///
+    /// @param permit The batch permit parameters (tokens, nonce, deadline).
+    /// @param transferDetails Per-token transfer instructions (recipient, amount).
+    /// @param signature The EIP-712 signature from the authenticated sender.
+    function permit2TransferFrom(
+        IPermit2.PermitBatchTransferFrom memory permit,
+        IPermit2.SignatureTransferDetails[] calldata transferDetails,
+        bytes calldata signature
+    ) external;
 
     // ==========================
     // View

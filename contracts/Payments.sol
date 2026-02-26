@@ -14,18 +14,16 @@ import {IDaiPermit} from "./interfaces/IDaiPermit.sol";
 import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 
 /// @title Payments
-/// @custom:security-contact security@euler.xyz
-/// @author Euler Labs (https://www.eulerlabs.com/)
 /// @notice EVC-authenticated payment pass-through contract.
 /// Pulls ERC20 tokens from an authenticated sender and forwards them to a receiver.
-/// Supports ERC-2612 permits, Dai permits, Permit2 signature permits, and WETH wrap/unwrap flows.
-/// Designed to be used in EVC batches for atomic multi-step flows (e.g., transfer + swap + deposit).
+/// Standalone permit utilities set allowances (ERC-2612, Dai, Permit2) without transferring tokens.
+/// Designed to be used in EVC batches for atomic multi-step flows (e.g., permit + transfer + swap + deposit).
 contract Payments is IPayments, EVCUtil {
     using SafeERC20Lib for IERC20;
 
     // --- Immutables ---
 
-    address public immutable permit2;
+    address public immutable permit2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     // --- Reentrancy guard ---
 
@@ -44,9 +42,7 @@ contract Payments is IPayments, EVCUtil {
 
     // --- Constructor ---
 
-    constructor(address _evc, address _permit2) EVCUtil(_evc) {
-        permit2 = _permit2;
-    }
+    constructor(address _evc) EVCUtil(_evc) {}
 
     // --- Receive ---
 
@@ -73,116 +69,89 @@ contract Payments is IPayments, EVCUtil {
     }
 
     // ==========================
-    // Permit + Transfer
+    // Permit Utilities
     // ==========================
 
-    /// @notice Execute an ERC-2612 permit, then transfer tokens.
-    /// @dev The permit grants this contract an allowance, then the transfer executes immediately.
-    ///      Uses try/catch on the permit call to handle front-running or pre-existing approvals gracefully.
+    /// @notice Execute an ERC-2612 permit to grant this contract an allowance.
+    /// @dev Uses try/catch so a front-run or pre-existing approval doesn't revert the batch.
+    /// The spender is always `address(this)`. Designed to precede a `transfer()` call in an EVC batch.
     /// @param token The ERC20 token (must implement ERC-2612).
-    /// @param receiver The recipient address.
-    /// @param amount The amount to transfer.
+    /// @param owner The token owner who signed the permit.
+    /// @param amount The approval amount.
     /// @param deadline Permit deadline.
     /// @param v Signature v component.
     /// @param r Signature r component.
     /// @param s Signature s component.
-    function transferWithPermit(
+    function permit(
         address token,
-        address receiver,
+        address owner,
         uint256 amount,
         uint256 deadline,
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external callThroughEVC nonReentrant {
-        _validateReceiver(receiver);
-        _validateAmount(amount);
-
-        address sender = _msgSender();
-
-        // Execute the ERC-2612 permit: owner approves this contract.
-        // try/catch so a front-run or pre-existing approval doesn't revert the whole tx.
-        try IERC20Permit(token).permit(sender, address(this), amount, deadline, v, r, s) {} catch {}
-
-        IERC20(token).safeTransferFrom(sender, receiver, amount, permit2);
-
-        emit Transfer(token, sender, receiver, amount);
+    )
+        external
+        nonReentrant
+    {
+        try IERC20Permit(token).permit(owner, address(this), amount, deadline, v, r, s) {} catch {}
     }
 
-    /// @notice Execute a Dai-style permit, then transfer tokens.
-    /// @dev Dai permits use a different signature scheme (nonce, expiry, allowed) instead of (value, deadline).
+    /// @notice Execute a Dai-style permit to grant this contract an allowance.
+    /// @dev Uses try/catch so a front-run or pre-existing approval doesn't revert the batch.
+    /// The spender is always `address(this)`.
     /// @param token The Dai token address.
-    /// @param receiver The recipient address.
-    /// @param amount The amount to transfer.
+    /// @param owner The token owner who signed the permit.
     /// @param nonce The Dai permit nonce.
     /// @param expiry The Dai permit expiry.
     /// @param allowed Whether to allow or disallow.
     /// @param v Signature v component.
     /// @param r Signature r component.
     /// @param s Signature s component.
-    function transferWithDaiPermit(
+    function permitDai(
         address token,
-        address receiver,
-        uint256 amount,
+        address owner,
         uint256 nonce,
         uint256 expiry,
         bool allowed,
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external callThroughEVC nonReentrant {
-        _validateReceiver(receiver);
-        _validateAmount(amount);
-
-        address sender = _msgSender();
-
-        // Execute the Dai-style permit: holder approves this contract.
-        try IDaiPermit(token).permit(sender, address(this), nonce, expiry, allowed, v, r, s) {} catch {}
-
-        IERC20(token).safeTransferFrom(sender, receiver, amount, permit2);
-
-        emit Transfer(token, sender, receiver, amount);
+    )
+        external
+        nonReentrant
+    {
+        try IDaiPermit(token).permit(owner, address(this), nonce, expiry, allowed, v, r, s) {} catch {}
     }
 
-    /// @notice Execute a Permit2 signature-based permit, then transfer tokens.
-    /// @dev First sets a Permit2 allowance for this contract via signature, then transfers via Permit2.
+    /// @notice Execute a Permit2 AllowanceTransfer permit to grant this contract a Permit2 allowance.
+    /// @dev Uses try/catch so a front-run or pre-existing approval doesn't revert the batch.
+    /// The spender is always `address(this)`.
     /// @param token The ERC20 token address.
-    /// @param receiver The recipient address.
-    /// @param amount The amount to transfer.
+    /// @param owner The token owner who signed the Permit2 permit.
+    /// @param amount The allowance amount.
     /// @param nonce Permit2 nonce.
     /// @param deadline Permit2 deadline.
     /// @param signature The Permit2 signature bytes.
-    function transferWithPermit2(
+    function permit2Permit(
         address token,
-        address receiver,
+        address owner,
         uint256 amount,
         uint256 nonce,
         uint256 deadline,
         bytes calldata signature
-    ) external callThroughEVC nonReentrant {
-        _validateReceiver(receiver);
-        _validateAmount(amount);
-
-        address sender = _msgSender();
-
-        // Execute Permit2 AllowanceTransfer.permit to set allowance for this contract.
-        if (permit2 != address(0)) {
-            IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
-                details: IPermit2.PermitDetails({
-                    token: token,
-                    amount: uint160(amount),
-                    expiration: uint48(deadline),
-                    nonce: uint48(nonce)
-                }),
-                spender: address(this),
-                sigDeadline: deadline
-            });
-            try IPermit2(permit2).permit(sender, permitSingle, signature) {} catch {}
-        }
-
-        IERC20(token).safeTransferFrom(sender, receiver, amount, permit2);
-
-        emit Transfer(token, sender, receiver, amount);
+    )
+        external
+        nonReentrant
+    {
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: token, amount: uint160(amount), expiration: uint48(deadline), nonce: uint48(nonce)
+            }),
+            spender: address(this),
+            sigDeadline: deadline
+        });
+        try IPermit2(permit2).permit(owner, permitSingle, signature) {} catch {}
     }
 
     // ==========================
@@ -193,12 +162,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param weth The WETH contract address.
     /// @param receiver The recipient of the WETH.
     /// @param amount The amount of ETH to wrap (must be <= msg.value).
-    function wrapAndTransfer(address weth, address receiver, uint256 amount)
-        external
-        payable
-        callThroughEVC
-        nonReentrant
-    {
+    function wrapAndTransfer(address weth, address receiver, uint256 amount) external payable callThroughEVC nonReentrant {
         _validateReceiver(receiver);
         _validateAmount(amount);
         if (msg.value < amount) revert E_InsufficientMsgValue();
@@ -219,11 +183,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param weth The WETH contract address.
     /// @param receiver The recipient of the native ETH.
     /// @param amount The amount of WETH to unwrap.
-    function unwrapAndTransfer(address weth, address receiver, uint256 amount)
-        external
-        callThroughEVC
-        nonReentrant
-    {
+    function unwrapAndTransfer(address weth, address receiver, uint256 amount) external callThroughEVC nonReentrant {
         _validateReceiver(receiver);
         _validateAmount(amount);
 
@@ -250,6 +210,27 @@ contract Payments is IPayments, EVCUtil {
         _transferNativeETH(receiver, msg.value);
 
         emit NativeTransfer(_msgSender(), receiver, msg.value);
+    }
+
+    // ==========================
+    // Permit2 Batch Transfer
+    // ==========================
+
+    /// @notice Pull tokens via Permit2 SignatureTransfer (batch) and forward to specified recipients.
+    /// @dev The token owner is resolved via `_msgSender()` (EVC-authenticated).
+    /// @param permit The batch permit parameters (tokens, nonce, deadline).
+    /// @param transferDetails Per-token transfer instructions (recipient, amount).
+    /// @param signature The EIP-712 signature from the authenticated sender.
+    function permit2TransferFrom(
+        IPermit2.PermitBatchTransferFrom memory permit,
+        IPermit2.SignatureTransferDetails[] calldata transferDetails,
+        bytes calldata signature
+    )
+        external
+        callThroughEVC
+        nonReentrant
+    {
+        IPermit2(permit2).permitTransferFrom(permit, transferDetails, _msgSender(), signature);
     }
 
     // ==========================
