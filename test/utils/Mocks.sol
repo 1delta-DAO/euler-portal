@@ -119,42 +119,6 @@ contract MockERC20RequiresZeroAllowance {
     }
 }
 
-/// @dev ERC20 with ERC-2612 permit support (mock — skips ECDSA, just sets allowance)
-contract MockERC20Permit is MockERC20 {
-    constructor(string memory _name, string memory _symbol, uint8 _decimals) MockERC20(_name, _symbol, _decimals) {}
-
-    function permit(address owner, address spender, uint256 value, uint256, uint8, bytes32, bytes32) external {
-        allowance[owner][spender] = value;
-    }
-}
-
-/// @dev ERC20 with Dai-style permit support (mock — skips ECDSA, just sets allowance)
-contract MockDaiPermit is MockERC20 {
-    constructor(string memory _name, string memory _symbol, uint8 _decimals) MockERC20(_name, _symbol, _decimals) {}
-
-    function permit(address holder, address spender, uint256, uint256, bool allowed, uint8, bytes32, bytes32) external {
-        allowance[holder][spender] = allowed ? type(uint256).max : 0;
-    }
-}
-
-/// @dev ERC-2612 permit that always reverts (for try/catch testing)
-contract MockERC20PermitReverting is MockERC20 {
-    constructor() MockERC20("Reverting", "REV", 18) {}
-
-    function permit(address, address, uint256, uint256, uint8, bytes32, bytes32) external pure {
-        revert("permit reverted");
-    }
-}
-
-/// @dev Dai-style permit that always reverts (for try/catch testing)
-contract MockDaiPermitReverting is MockERC20 {
-    constructor() MockERC20("Reverting Dai", "REVDAI", 18) {}
-
-    function permit(address, address, uint256, uint256, bool, uint8, bytes32, bytes32) external pure {
-        revert("permit reverted");
-    }
-}
-
 // ============ WETH Mock ============
 
 contract MockWETH {
@@ -210,10 +174,6 @@ contract MockPermit2 {
     mapping(address => mapping(address => mapping(address => uint160))) public allowance;
     bool public shouldRevertBatch;
 
-    function permit(address owner, IPermit2.PermitSingle memory permitSingle, bytes calldata) external {
-        allowance[permitSingle.details.token][owner][permitSingle.spender] = permitSingle.details.amount;
-    }
-
     function transferFrom(address from, address to, uint160 amount, address token) external {
         uint160 currentAllowance = allowance[token][from][msg.sender];
         require(currentAllowance >= amount, "MockPermit2: insufficient allowance");
@@ -230,6 +190,22 @@ contract MockPermit2 {
 
     function setShouldRevertBatch(bool _shouldRevert) external {
         shouldRevertBatch = _shouldRevert;
+    }
+
+    function permitTransferFrom(
+        IPermit2.PermitTransferFrom memory permit,
+        IPermit2.SignatureTransferDetails calldata transferDetails,
+        address owner,
+        bytes calldata
+    ) external {
+        if (shouldRevertBatch) revert("MockPermit2: reverted");
+
+        (bool success,) = permit.permitted.token.call(
+            abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)", owner, transferDetails.to, transferDetails.requestedAmount
+            )
+        );
+        require(success, "MockPermit2: transfer failed");
     }
 
     function permitTransferFrom(
