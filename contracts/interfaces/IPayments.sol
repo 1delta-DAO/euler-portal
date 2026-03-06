@@ -101,7 +101,8 @@ interface IPayments {
         IPermit2.PermitTransferFrom memory permit,
         IPermit2.SignatureTransferDetails calldata transferDetails,
         bytes calldata signature
-    ) external;
+    )
+        external;
 
     /// @notice Pull tokens via Permit2 SignatureTransfer (batch) and forward to specified recipients.
     /// @dev The user signs a single off-chain EIP-712 signature authorising the transfer of multiple tokens.
@@ -117,7 +118,8 @@ interface IPayments {
         IPermit2.PermitBatchTransferFrom memory permit,
         IPermit2.SignatureTransferDetails[] calldata transferDetails,
         bytes calldata signature
-    ) external;
+    )
+        external;
 
     // ==========================
     // View

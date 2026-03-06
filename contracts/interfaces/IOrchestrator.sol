@@ -208,13 +208,7 @@ interface IOrchestrator {
     /// @param repayAmount Amount of debt to repay. Use `type(uint256).max` to repay all.
     /// @param amountMin Minimum balance required. Set to 0 to skip the slippage check.
     /// @param account The account whose debt is repaid and who receives deposit shares.
-    function repayAndDeposit(
-        address token,
-        address vault,
-        uint256 repayAmount,
-        uint256 amountMin,
-        address account
-    ) external;
+    function repayAndDeposit(address token, address vault, uint256 repayAmount, uint256 amountMin, address account) external;
 
     /// @notice Transfer the contract's full ERC20 token balance to a recipient.
     /// @dev Sends the entire `token.balanceOf(address(this))` to `to`. Use this to extract swap output

@@ -301,10 +301,8 @@ contract OrchestratorTest is Test {
 
         _fundOrchestratorWithTokenA(200e18);
 
-        bytes memory swapData1 =
-            abi.encode(address(swapTarget), abi.encodeCall(MockSwapTarget.swap, (100e18)));
-        bytes memory swapData2 =
-            abi.encode(address(swapTarget2), abi.encodeCall(MockSwapTarget.swap, (100e18)));
+        bytes memory swapData1 = abi.encode(address(swapTarget), abi.encodeCall(MockSwapTarget.swap, (100e18)));
+        bytes memory swapData2 = abi.encode(address(swapTarget2), abi.encodeCall(MockSwapTarget.swap, (100e18)));
 
         bytes[] memory calls = new bytes[](8);
         calls[0] = abi.encodeCall(Orchestrator.approve, (address(tokenA), address(swapTarget)));
@@ -693,5 +691,4 @@ contract OrchestratorTest is Test {
         assertEq(receiver.balance - receiverBalBefore, 1 ether);
         assertEq(address(orchestrator).balance, 0);
     }
-
 }

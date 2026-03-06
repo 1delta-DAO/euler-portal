@@ -11,7 +11,10 @@ import "evk-periphery/Lens/LensTypes.sol";
 
 /// @dev Old lens without the timestamp shortcut, for gas comparison.
 contract AccountPositionLensOld is AccountLens {
-    function getAccountPositionsBatch(address evc, address[] calldata accounts)
+    function getAccountPositionsBatch(
+        address evc,
+        address[] calldata accounts
+    )
         public
         view
         returns (AccountPositionInfo[] memory)
@@ -36,11 +39,7 @@ contract AccountPositionLensOld is AccountLens {
     }
 
     /// @dev Original logic: no timestamp shortcut, always queries controllers + collaterals.
-    function _getAccountPosition(address evc, address account)
-        internal
-        view
-        returns (bool, AccountPositionInfo memory)
-    {
+    function _getAccountPosition(address evc, address account) internal view returns (bool, AccountPositionInfo memory) {
         AccountPositionInfo memory result;
         result.account = account;
 
@@ -76,11 +75,7 @@ contract AccountPositionLensOld is AccountLens {
         return (hasPosition, result);
     }
 
-    function _getVaultPositionInfo(address evc, address account, address vault)
-        internal
-        view
-        returns (VaultPositionInfo memory)
-    {
+    function _getVaultPositionInfo(address evc, address account, address vault) internal view returns (VaultPositionInfo memory) {
         VaultPositionInfo memory result;
 
         result.vault = vault;

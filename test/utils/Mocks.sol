@@ -179,8 +179,7 @@ contract MockPermit2 {
         require(currentAllowance >= amount, "MockPermit2: insufficient allowance");
         allowance[token][from][msg.sender] = currentAllowance - amount;
 
-        (bool success,) =
-            token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", from, to, uint256(amount)));
+        (bool success,) = token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", from, to, uint256(amount)));
         require(success, "MockPermit2: transfer failed");
     }
 
@@ -197,14 +196,17 @@ contract MockPermit2 {
         IPermit2.SignatureTransferDetails calldata transferDetails,
         address owner,
         bytes calldata
-    ) external {
+    )
+        external
+    {
         if (shouldRevertBatch) revert("MockPermit2: reverted");
 
-        (bool success,) = permit.permitted.token.call(
-            abi.encodeWithSignature(
-                "transferFrom(address,address,uint256)", owner, transferDetails.to, transferDetails.requestedAmount
-            )
-        );
+        (bool success,) = permit.permitted.token
+            .call(
+                abi.encodeWithSignature(
+                    "transferFrom(address,address,uint256)", owner, transferDetails.to, transferDetails.requestedAmount
+                )
+            );
         require(success, "MockPermit2: transfer failed");
     }
 
@@ -213,7 +215,9 @@ contract MockPermit2 {
         IPermit2.SignatureTransferDetails[] calldata transferDetails,
         address owner,
         bytes calldata
-    ) external {
+    )
+        external
+    {
         if (shouldRevertBatch) revert("MockPermit2: batch reverted");
 
         require(permit.permitted.length == transferDetails.length, "MockPermit2: length mismatch");
@@ -223,8 +227,7 @@ contract MockPermit2 {
             uint256 amount = transferDetails[i].requestedAmount;
             address to = transferDetails[i].to;
 
-            (bool success,) =
-                token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, to, amount));
+            (bool success,) = token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, to, amount));
             require(success, "MockPermit2: transfer failed");
         }
     }
@@ -243,7 +246,9 @@ contract MockPermit2SignatureTransfer {
         IPermit2.SignatureTransferDetails[] calldata transferDetails,
         address owner,
         bytes calldata
-    ) external {
+    )
+        external
+    {
         if (shouldRevert) revert("MockPermit2SignatureTransfer: reverted");
 
         require(permit.permitted.length == transferDetails.length, "MockPermit2SignatureTransfer: length mismatch");
@@ -253,8 +258,7 @@ contract MockPermit2SignatureTransfer {
             uint256 amount = transferDetails[i].requestedAmount;
             address to = transferDetails[i].to;
 
-            (bool success,) =
-                token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, to, amount));
+            (bool success,) = token.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, to, amount));
             require(success, "MockPermit2SignatureTransfer: transfer failed");
         }
     }
