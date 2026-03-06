@@ -14,8 +14,6 @@ import {IDaiPermit} from "./interfaces/IDaiPermit.sol";
 import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 
 /// @title Payments
-/// @custom:security-contact security@euler.xyz
-/// @author Euler Labs (https://www.eulerlabs.com/)
 /// @notice EVC-authenticated payment pass-through contract.
 /// Pulls ERC20 tokens from an authenticated sender and forwards them to a receiver.
 /// Supports ERC-2612 permits, Dai permits, Permit2 signature permits, and WETH wrap/unwrap flows.
@@ -94,7 +92,11 @@ contract Payments is IPayments, EVCUtil {
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external callThroughEVC nonReentrant {
+    )
+        external
+        callThroughEVC
+        nonReentrant
+    {
         _validateReceiver(receiver);
         _validateAmount(amount);
 
@@ -130,7 +132,11 @@ contract Payments is IPayments, EVCUtil {
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external callThroughEVC nonReentrant {
+    )
+        external
+        callThroughEVC
+        nonReentrant
+    {
         _validateReceiver(receiver);
         _validateAmount(amount);
 
@@ -159,7 +165,11 @@ contract Payments is IPayments, EVCUtil {
         uint256 nonce,
         uint256 deadline,
         bytes calldata signature
-    ) external callThroughEVC nonReentrant {
+    )
+        external
+        callThroughEVC
+        nonReentrant
+    {
         _validateReceiver(receiver);
         _validateAmount(amount);
 
@@ -169,10 +179,7 @@ contract Payments is IPayments, EVCUtil {
         if (permit2 != address(0)) {
             IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
                 details: IPermit2.PermitDetails({
-                    token: token,
-                    amount: uint160(amount),
-                    expiration: uint48(deadline),
-                    nonce: uint48(nonce)
+                    token: token, amount: uint160(amount), expiration: uint48(deadline), nonce: uint48(nonce)
                 }),
                 spender: address(this),
                 sigDeadline: deadline
@@ -193,12 +200,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param weth The WETH contract address.
     /// @param receiver The recipient of the WETH.
     /// @param amount The amount of ETH to wrap (must be <= msg.value).
-    function wrapAndTransfer(address weth, address receiver, uint256 amount)
-        external
-        payable
-        callThroughEVC
-        nonReentrant
-    {
+    function wrapAndTransfer(address weth, address receiver, uint256 amount) external payable callThroughEVC nonReentrant {
         _validateReceiver(receiver);
         _validateAmount(amount);
         if (msg.value < amount) revert E_InsufficientMsgValue();
@@ -219,11 +221,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param weth The WETH contract address.
     /// @param receiver The recipient of the native ETH.
     /// @param amount The amount of WETH to unwrap.
-    function unwrapAndTransfer(address weth, address receiver, uint256 amount)
-        external
-        callThroughEVC
-        nonReentrant
-    {
+    function unwrapAndTransfer(address weth, address receiver, uint256 amount) external callThroughEVC nonReentrant {
         _validateReceiver(receiver);
         _validateAmount(amount);
 

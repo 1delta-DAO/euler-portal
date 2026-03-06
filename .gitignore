@@ -22,3 +22,7 @@ docs/
 # Reports
 reports/
 
+# Temp
+.temp
+.tmp
+

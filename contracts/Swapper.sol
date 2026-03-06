@@ -10,8 +10,6 @@ import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
 import {Erc20Lib} from "./lib/Erc20Lib.sol";
 
 /// @title Swapper
-/// @custom:security-contact security@euler.xyz
-/// @author Euler Labs (https://www.eulerlabs.com/)
 /// @notice Untrusted helper contract for executing arbitrary swaps via a generic handler
 /// and composable post-swap actions (deposit, repay, sweep) with slippage checks.
 /// @dev This contract is entirely untrusted — it holds no persistent token balances and needs no authentication.
@@ -136,10 +134,7 @@ contract Swapper is ISwapper {
     /// @param repayAmount Amount of debt to repay. Use type(uint256).max to repay all.
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param account Account whose debt is repaid.
-    function repay(address token, address vault, uint256 repayAmount, uint256 amountMin, address account)
-        public
-        externalLock
-    {
+    function repay(address token, address vault, uint256 repayAmount, uint256 amountMin, address account) public externalLock {
         uint256 balance = IERC20(token).slippageCheck(address(this), amountMin);
         if (balance == 0) return;
 
@@ -154,7 +149,13 @@ contract Swapper is ISwapper {
     /// @param repayAmount Amount of debt to repay. Use type(uint256).max to repay all.
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param account Account whose debt is repaid and who receives deposit shares.
-    function repayAndDeposit(address token, address vault, uint256 repayAmount, uint256 amountMin, address account)
+    function repayAndDeposit(
+        address token,
+        address vault,
+        uint256 repayAmount,
+        uint256 amountMin,
+        address account
+    )
         public
         externalLock
     {
