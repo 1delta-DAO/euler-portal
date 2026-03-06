@@ -142,7 +142,7 @@ Standalone functions for vault interactions, each with a **minimum amount that r
 | `sweep(token, amountMin, to)` | Transfer full ERC20 balance to recipient |
 | `sweepNative(amountMin, to)` | Transfer full native currency balance to recipient |
 
-All functions revert with `Orchestrator_InsufficientBalance` if the contract's balance is below `amountMin`. Pass `amountMin = 0` to skip the check.
+All functions revert with `Erc20Lib.InsufficientBalance()` if the contract's balance is below `amountMin`. Pass `amountMin = 0` to skip the check.
 
 ### Multicall
 

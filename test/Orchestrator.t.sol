@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {Orchestrator} from "../contracts/Orchestrator.sol";
 import {IOrchestrator} from "../contracts/interfaces/IOrchestrator.sol";
 import {SafeERC20Lib} from "../contracts/lib/SafeERC20Lib.sol";
+import {Erc20Lib} from "../contracts/lib/Erc20Lib.sol";
 
 import {
     MockERC20,
@@ -106,7 +107,7 @@ contract OrchestratorTest is Test {
     function test_deposit_revertsIfBelowMin() public {
         _fundOrchestratorWithTokenB(50e18);
 
-        vm.expectRevert(IOrchestrator.Orchestrator_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         orchestrator.deposit(address(tokenB), address(vault), 100e18, user);
     }
 
@@ -175,7 +176,7 @@ contract OrchestratorTest is Test {
     function test_repay_revertsIfBelowMin() public {
         _fundOrchestratorWithTokenB(10e18);
 
-        vm.expectRevert(IOrchestrator.Orchestrator_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         orchestrator.repay(address(tokenB), address(vault), 10e18, 50e18, user);
     }
 
@@ -203,7 +204,7 @@ contract OrchestratorTest is Test {
     function test_repayAndDeposit_revertsIfBelowMin() public {
         _fundOrchestratorWithTokenB(10e18);
 
-        vm.expectRevert(IOrchestrator.Orchestrator_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         orchestrator.repayAndDeposit(address(tokenB), address(vault), type(uint256).max, 50e18, user);
     }
 
@@ -234,7 +235,7 @@ contract OrchestratorTest is Test {
     function test_sweep_revertsIfBelowMin() public {
         _fundOrchestratorWithTokenA(50e18);
 
-        vm.expectRevert(IOrchestrator.Orchestrator_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         orchestrator.sweep(address(tokenA), 100e18, receiver);
     }
 
@@ -602,7 +603,7 @@ contract OrchestratorTest is Test {
     function test_sweepNative_revertsIfBelowMin() public {
         vm.deal(address(orchestrator), 0.5 ether);
 
-        vm.expectRevert(IOrchestrator.Orchestrator_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         orchestrator.sweepNative(1 ether, receiver);
     }
 
