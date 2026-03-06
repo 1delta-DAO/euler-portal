@@ -7,6 +7,7 @@ import {IERC20} from "./interfaces/IERC20.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {SafeERC20Lib} from "./lib/SafeERC20Lib.sol";
+import {Erc20Lib} from "./lib/Erc20Lib.sol";
 
 /// @title Orchestrator
 /// @notice Untrusted helper contract for executing arbitrary swaps via a generic handler
@@ -133,7 +134,7 @@ contract Orchestrator is IOrchestrator {
     /// @param to Recipient address.
     function sweepNative(uint256 amountMin, address to) public externalLock {
         uint256 balance = address(this).balance;
-        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
+        Erc20Lib.requireMin(balance, amountMin);
         if (balance == 0) return;
         (bool success,) = to.call{value: balance}("");
         if (!success) revert Orchestrator_NativeTransferFailed();
@@ -153,8 +154,7 @@ contract Orchestrator is IOrchestrator {
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param account Receiver of the vault shares.
     function deposit(address token, address vault, uint256 amountMin, address account) public externalLock {
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
+        uint256 balance = Erc20Lib.slippageCheck(IERC20(token), address(this), amountMin);
         if (balance == 0) return;
 
         IVault(vault).deposit(balance, account);
@@ -168,8 +168,7 @@ contract Orchestrator is IOrchestrator {
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param account Account whose debt is repaid.
     function repay(address token, address vault, uint256 repayAmount, uint256 amountMin, address account) public externalLock {
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
+        uint256 balance = Erc20Lib.slippageCheck(IERC20(token), address(this), amountMin);
         if (balance == 0) return;
 
         repayAmount = _capRepay(repayAmount, balance, IVault(vault).debtOf(account));
@@ -193,8 +192,7 @@ contract Orchestrator is IOrchestrator {
         public
         externalLock
     {
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
+        uint256 balance = Erc20Lib.slippageCheck(IERC20(token), address(this), amountMin);
         if (balance == 0) return;
 
         _repayAndDeposit(token, vault, repayAmount, account);
@@ -206,8 +204,7 @@ contract Orchestrator is IOrchestrator {
     /// @param amountMin Minimum balance required. Reverts if not met.
     /// @param to Recipient address.
     function sweep(address token, uint256 amountMin, address to) public externalLock {
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance < amountMin) revert Orchestrator_InsufficientBalance();
+        uint256 balance = Erc20Lib.slippageCheck(IERC20(token), address(this), amountMin);
         if (balance == 0) return;
 
         IERC20(token).safeTransfer(to, balance);
@@ -274,26 +271,7 @@ contract Orchestrator is IOrchestrator {
     function _setMaxAllowance(address token, address spender) internal {
         if (_approved[token][spender]) return;
 
-        _safeApproveWithRetry(token, spender, type(uint256).max);
+        Erc20Lib.safeApproveWithRetry(IERC20(token), spender, type(uint256).max);
         _approved[token][spender] = true;
-    }
-
-    function _safeApproveWithRetry(address token, address spender, uint256 value) internal {
-        (bool success,) = _trySafeApprove(token, spender, value);
-
-        // Some tokens (e.g. USDT) require allowance to be set to 0 first
-        if (!success) {
-            (success,) = _trySafeApprove(token, spender, 0);
-            if (success) {
-                (success,) = _trySafeApprove(token, spender, value);
-            }
-        }
-
-        if (!success) revert Orchestrator_SwapError(token, "");
-    }
-
-    function _trySafeApprove(address token, address spender, uint256 value) internal returns (bool, bytes memory) {
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, value));
-        return (success && (data.length == 0 || abi.decode(data, (bool))), data);
     }
 }

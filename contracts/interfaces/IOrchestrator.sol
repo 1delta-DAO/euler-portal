@@ -39,9 +39,8 @@ interface IOrchestrator {
     /// @param result The revert data returned by the failed call (empty if target has no code).
     error Orchestrator_SwapError(address target, bytes result);
 
-    /// @notice Thrown when the contract's token or native balance is below the required minimum (slippage check).
-    /// Applies to: deposit, repay, repayAndDeposit, sweep, sweepNative.
-    error Orchestrator_InsufficientBalance();
+    /// @notice Slippage checks (deposit, repay, repayAndDeposit, sweep, sweepNative) revert with
+    /// Erc20Lib.InsufficientBalance() when the contract's token or native balance is below amountMin.
 
     /// @notice Thrown when a native currency transfer to a recipient fails (recipient rejected or out of gas).
     /// Applies to: sweepNative.
@@ -145,7 +144,7 @@ interface IOrchestrator {
 
     /// @notice Send the contract's entire native currency balance to a recipient.
     /// @dev Acts as the native currency equivalent of `sweep`. Includes a slippage check: reverts with
-    /// `Orchestrator_InsufficientBalance` if the balance is below `amountMin`. If the balance is zero
+    /// Erc20Lib.InsufficientBalance() if the balance is below `amountMin`. If the balance is zero
     /// (and amountMin is 0), this is a no-op.
     ///
     /// Reverts with `Orchestrator_NativeTransferFailed` if the recipient rejects the transfer (e.g., a
@@ -164,7 +163,7 @@ interface IOrchestrator {
     /// @dev Queries `token.balanceOf(address(this))` and deposits the entire amount into the vault
     /// on behalf of `account`. The vault must have been pre-approved via `approve(token, vault)`.
     ///
-    /// Includes a slippage check: reverts with `Orchestrator_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with Erc20Lib.InsufficientBalance() if balance < amountMin.
     /// If balance is zero (and amountMin is 0), this is a no-op.
     ///
     /// This function deposits the FULL balance, including any tokens that were already in the contract
@@ -186,7 +185,7 @@ interface IOrchestrator {
     /// overestimates the repay amount. Use `type(uint256).max` to repay all debt — it is passed
     /// through to the vault which resolves it to the exact outstanding amount.
     ///
-    /// Includes a slippage check: reverts with `Orchestrator_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with Erc20Lib.InsufficientBalance() if balance < amountMin.
     ///
     /// @param token The borrowed asset (same as the vault's underlying).
     /// @param vault The Euler lending vault where debt is tracked.
@@ -209,19 +208,13 @@ interface IOrchestrator {
     /// @param repayAmount Amount of debt to repay. Use `type(uint256).max` to repay all.
     /// @param amountMin Minimum balance required. Set to 0 to skip the slippage check.
     /// @param account The account whose debt is repaid and who receives deposit shares.
-    function repayAndDeposit(
-        address token,
-        address vault,
-        uint256 repayAmount,
-        uint256 amountMin,
-        address account
-    ) external;
+    function repayAndDeposit(address token, address vault, uint256 repayAmount, uint256 amountMin, address account) external;
 
     /// @notice Transfer the contract's full ERC20 token balance to a recipient.
     /// @dev Sends the entire `token.balanceOf(address(this))` to `to`. Use this to extract swap output
     /// when the output should go directly to the user rather than into a vault.
     ///
-    /// Includes a slippage check: reverts with `Orchestrator_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with Erc20Lib.InsufficientBalance() if balance < amountMin.
     /// If balance is zero (and amountMin is 0), this is a no-op.
     ///
     /// @param token The ERC20 token to transfer.

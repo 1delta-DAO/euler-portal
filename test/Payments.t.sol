@@ -380,9 +380,7 @@ contract PaymentsTest is Test {
 
         vm.prank(operator);
         vm.expectRevert();
-        evc.call(
-            address(payments), otherUser, 0, abi.encodeCall(Payments.transfer, (address(token), operator, 100e18))
-        );
+        evc.call(address(payments), otherUser, 0, abi.encodeCall(Payments.transfer, (address(token), operator, 100e18)));
 
         assertEq(token.balanceOf(otherUser), 500e18);
     }
@@ -443,11 +441,8 @@ contract PaymentsTest is Test {
         permitted[0] = IPermit2.TokenPermissions({token: address(token), amount: 100e18});
         permitted[1] = IPermit2.TokenPermissions({token: address(tokenB), amount: 50e18});
 
-        IPermit2.PermitBatchTransferFrom memory batchPermit = IPermit2.PermitBatchTransferFrom({
-            permitted: permitted,
-            nonce: 0,
-            deadline: block.timestamp + 1 hours
-        });
+        IPermit2.PermitBatchTransferFrom memory batchPermit =
+            IPermit2.PermitBatchTransferFrom({permitted: permitted, nonce: 0, deadline: block.timestamp + 1 hours});
 
         IPermit2.SignatureTransferDetails[] memory details = new IPermit2.SignatureTransferDetails[](2);
         details[0] = IPermit2.SignatureTransferDetails({to: receiver, requestedAmount: 100e18});
@@ -468,11 +463,8 @@ contract PaymentsTest is Test {
         IPermit2.TokenPermissions[] memory permitted = new IPermit2.TokenPermissions[](1);
         permitted[0] = IPermit2.TokenPermissions({token: address(token), amount: 100e18});
 
-        IPermit2.PermitBatchTransferFrom memory batchPermit = IPermit2.PermitBatchTransferFrom({
-            permitted: permitted,
-            nonce: 0,
-            deadline: block.timestamp + 1 hours
-        });
+        IPermit2.PermitBatchTransferFrom memory batchPermit =
+            IPermit2.PermitBatchTransferFrom({permitted: permitted, nonce: 0, deadline: block.timestamp + 1 hours});
 
         IPermit2.SignatureTransferDetails[] memory details = new IPermit2.SignatureTransferDetails[](1);
         details[0] = IPermit2.SignatureTransferDetails({to: receiver, requestedAmount: 100e18});

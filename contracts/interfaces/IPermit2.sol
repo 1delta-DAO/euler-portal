@@ -34,12 +34,14 @@ interface IPermit2 {
         SignatureTransferDetails calldata transferDetails,
         address owner,
         bytes calldata signature
-    ) external;
+    )
+        external;
 
     function permitTransferFrom(
         PermitBatchTransferFrom memory permit,
         SignatureTransferDetails[] calldata transferDetails,
         address owner,
         bytes calldata signature
-    ) external;
+    )
+        external;
 }

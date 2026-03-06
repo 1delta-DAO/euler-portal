@@ -13,10 +13,7 @@ library SafeERC20Lib {
     error E_TransferFromFailed(bytes errorPermit2, bytes errorTransferFrom);
     error E_TransferFailed();
 
-    function trySafeTransferFrom(IERC20 token, address from, address to, uint256 value)
-        internal
-        returns (bool, bytes memory)
-    {
+    function trySafeTransferFrom(IERC20 token, address from, address to, uint256 value) internal returns (bool, bytes memory) {
         (bool success, bytes memory data) = address(token).call(abi.encodeCall(IERC20.transferFrom, (from, to, value)));
 
         return isEmptyOrTrueReturn(success, data) ? (true, bytes("")) : (false, data);
