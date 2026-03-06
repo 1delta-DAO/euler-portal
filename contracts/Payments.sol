@@ -22,21 +22,6 @@ contract Payments is IPayments, EVCUtil {
 
     address public immutable permit2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
-    // --- Reentrancy guard ---
-
-    uint256 private constant _NOT_ENTERED = 1;
-    uint256 private constant _ENTERED = 2;
-    uint256 private _reentrancyStatus = _NOT_ENTERED;
-
-    error ReentrancyGuardReentrantCall();
-
-    modifier nonReentrant() {
-        if (_reentrancyStatus == _ENTERED) revert ReentrancyGuardReentrantCall();
-        _reentrancyStatus = _ENTERED;
-        _;
-        _reentrancyStatus = _NOT_ENTERED;
-    }
-
     // --- Constructor ---
 
     constructor(address _evc) EVCUtil(_evc) {}
@@ -55,7 +40,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param token The ERC20 token address.
     /// @param receiver The recipient address.
     /// @param amount The amount to transfer.
-    function transfer(address token, address receiver, uint256 amount) external callThroughEVC nonReentrant {
+    function transfer(address token, address receiver, uint256 amount) external callThroughEVC {
         _validateReceiver(receiver);
         _validateAmount(amount);
 
@@ -70,7 +55,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param weth The WETH contract address.
     /// @param receiver The recipient of the WETH.
     /// @param amount The amount of ETH to wrap (must be <= msg.value).
-    function wrapAndTransfer(address weth, address receiver, uint256 amount) external payable callThroughEVC nonReentrant {
+    function wrapAndTransfer(address weth, address receiver, uint256 amount) external payable callThroughEVC {
         _validateReceiver(receiver);
         _validateAmount(amount);
         if (msg.value < amount) revert E_InsufficientMsgValue();
@@ -89,7 +74,7 @@ contract Payments is IPayments, EVCUtil {
     /// @param weth The WETH contract address.
     /// @param receiver The recipient of the native ETH.
     /// @param amount The amount of WETH to unwrap.
-    function unwrapAndTransfer(address weth, address receiver, uint256 amount) external callThroughEVC nonReentrant {
+    function unwrapAndTransfer(address weth, address receiver, uint256 amount) external callThroughEVC {
         _validateReceiver(receiver);
         _validateAmount(amount);
 
@@ -105,7 +90,7 @@ contract Payments is IPayments, EVCUtil {
 
     /// @notice Send native ETH (msg.value) directly to receiver.
     /// @param receiver The recipient of the native ETH.
-    function transferNative(address receiver) external payable callThroughEVC nonReentrant {
+    function transferNative(address receiver) external payable callThroughEVC {
         _validateReceiver(receiver);
         if (msg.value == 0) revert E_InvalidAmount();
 
@@ -128,7 +113,6 @@ contract Payments is IPayments, EVCUtil {
     )
         external
         callThroughEVC
-        nonReentrant
     {
         IPermit2(permit2).permitTransferFrom(permit, transferDetails, _msgSender(), signature);
     }
@@ -145,7 +129,6 @@ contract Payments is IPayments, EVCUtil {
     )
         external
         callThroughEVC
-        nonReentrant
     {
         IPermit2(permit2).permitTransferFrom(permit, transferDetails, _msgSender(), signature);
     }

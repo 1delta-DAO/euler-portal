@@ -11,19 +11,12 @@ Together they enable flows like: pull tokens from user → swap on any DEX → d
 
 ## Payments
 
-A stateless pass-through contract secured by the [Ethereum Vault Connector (EVC)](https://github.com/euler-xyz/ethereum-vault-connector). Pulls ERC20 tokens from an EVC-authenticated sender and forwards them to a receiver. No mutable storage beyond the reentrancy lock.
+A stateless pass-through contract secured by the [Ethereum Vault Connector (EVC)](https://github.com/euler-xyz/ethereum-vault-connector). Pulls ERC20 tokens from an EVC-authenticated sender and forwards them to a receiver. No mutable storage — pure immutables (`evc`, `permit2`) only.
 
 ### Functions
 
 **Core transfer:**
 - `transfer(token, receiver, amount)` — Pull tokens from sender, send to receiver. Tries [Permit2](https://github.com/Uniswap/permit2) first, falls back to standard `transferFrom`.
-
-**Permit utilities (gasless approvals):**
-- `permit(token, owner, amount, deadline, v, r, s)` — Execute ERC-2612 permit granting this contract an allowance.
-- `permitDai(token, owner, nonce, expiry, allowed, v, r, s)` — Execute Dai-style permit granting this contract an allowance.
-- `permit2Permit(token, owner, amount, nonce, deadline, signature)` — Execute Permit2 AllowanceTransfer permit granting this contract a Permit2 allowance.
-
-These are standalone permit utilities — they set allowances but do not transfer tokens. Use them as a preceding step before `transfer()` in an EVC batch. All use `try/catch` so front-running or pre-existing approvals don't revert the batch.
 
 **Native ETH / WETH:**
 - `wrapAndTransfer(weth, receiver, amount)` — Wrap ETH into WETH, transfer to receiver. Refunds excess.
@@ -35,11 +28,11 @@ These are standalone permit utilities — they set allowances but do not transfe
 
 ### Security
 
-- **EVC authentication** — Transfer functions use `callThroughEVC`. The `_msgSender()` resolves the EVC-authenticated account (owner or authorized operator), never raw `msg.sender`. Permit utilities and `permit2TransferFrom` are unauthenticated — signatures are the authorization.
-- **Approval-gated** — Cannot move tokens without the sender having approved this contract, Permit2, or provided a valid permit signature.
+- **EVC authentication** — Transfer functions use `callThroughEVC`. The `_msgSender()` resolves the EVC-authenticated account (owner or authorized operator), never raw `msg.sender`. `permit2TransferFrom` also uses EVC authentication — the EIP-712 signature authorizes the Permit2 transfer, while EVC resolves the token owner.
+- **Approval-gated** — Cannot move tokens without the sender having approved this contract or Permit2.
 - **Sub-account protection** — Rejects transfers to EVC sub-accounts whose private keys are unknown.
-- **Reentrancy guard** — All external functions protected by `nonReentrant`.
-- **No held state** — Pure pass-through. Two immutables (`evc`, `permit2`), no token balances, no admin.
+- **No reentrancy guard** — Intentionally omitted. The contract is fully stateless (no mutable storage, no token balances held between calls). Each function is atomic: tokens are pulled from the sender and forwarded to the receiver in the same call, so there is no transient state an attacker could exploit via reentrancy. This follows the same pattern as Euler's `FeeCollectorUtil` and Liquidator contracts, which also omit reentrancy guards on stateless pass-throughs.
+- **No held state** — Pure pass-through. Two immutables (`evc`, `permit2`), no admin.
 
 ---
 
@@ -161,7 +154,7 @@ orchestrator.multicall(calls);
 
 - **Untrusted** — No authentication, no admin. Anyone can call any function.
 - **Explicit approvals** — Callers compose `approve()` steps in multicall. Approvals are cached per token+spender pair with USDT-safe retry.
-- **Reentrancy protection** — `externalLock` blocks external reentrancy but allows self-calls (required for `multicall`).
+- **Reentrancy protection** — `externalLock` blocks external reentrancy but allows self-calls (required for `multicall`). Unlike Payments, the Orchestrator holds tokens transiently between multicall steps and makes arbitrary external calls (`_swapGeneric`), so a reentrancy guard is essential to prevent draining transient balances.
 - **Native currency safety** — Swap functions use an explicit `value` parameter drawn from `address(this).balance`, not `msg.value`, preventing double-spend in multicall.
 - **No persistent balance** — Tokens only reside in the contract during execution.
 
@@ -247,7 +240,6 @@ evc.batch(items);
 
 ### Other Patterns
 - **Split payments** — one batch transferring to multiple receivers atomically.
-- **Permit + transfer** — sign approval off-chain, call permit utility, then transfer in the same batch.
 - **Multi-swap** — use Orchestrator multicall to chain multiple swaps and deposits.
 
 ---
@@ -262,10 +254,10 @@ The evk-periphery includes a `TransferFromSender` contract. Comparison:
 | Transfer method | Permit2-first via SafeERC20Permit2Lib | Permit2-first via SafeERC20Lib |
 | Receiver validation | None | Rejects `address(0)` and EVC sub-accounts |
 | Amount validation | None | Rejects zero amounts |
-| Permit support | None (pre-existing approval required) | ERC-2612, Dai-style, Permit2 signature |
+| Permit support | None (pre-existing approval required) | None (pre-existing approval or Permit2 required) |
 | WETH/Native ETH | None | wrap+transfer, unwrap+transfer, native ETH |
-| Reentrancy guard | None | Storage-based reentrancy guard |
-| Events | None | Emits transfer events |
+| Reentrancy guard | None | None (stateless — no mutable state to protect) |
+| Events | None | None (relies on underlying ERC20 Transfer events) |
 
 TransferFromSender is a minimal pull-tokens helper embedded in SwapVerifier. Payments is the full-featured replacement.
 
