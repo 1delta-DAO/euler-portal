@@ -40,6 +40,7 @@ interface ISwapper {
     error Swapper_SwapError(address target, bytes result);
 
     /// @notice Thrown when the contract's token or native balance is below the required minimum (slippage check).
+    /// @dev The Swapper implementation uses Erc20Lib; insufficient balance reverts with Erc20Lib.InsufficientBalance().
     /// Applies to: deposit, repay, repayAndDeposit, sweep, sweepNative.
     error Swapper_InsufficientBalance();
 
@@ -120,7 +121,7 @@ interface ISwapper {
 
     /// @notice Send the contract's entire native currency balance to a recipient.
     /// @dev Acts as the native currency equivalent of `sweep`. Includes a slippage check: reverts with
-    /// `Swapper_InsufficientBalance` if the balance is below `amountMin`. If the balance is zero
+    /// Erc20Lib.InsufficientBalance() if the balance is below `amountMin`. If the balance is zero
     /// (and amountMin is 0), this is a no-op.
     ///
     /// Reverts with `Swapper_NativeTransferFailed` if the recipient rejects the transfer (e.g., a
@@ -139,7 +140,7 @@ interface ISwapper {
     /// @dev Queries `token.balanceOf(address(this))` and deposits the entire amount into the vault
     /// on behalf of `account`. The vault must have been pre-approved via `approve(token, vault)`.
     ///
-    /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with Erc20Lib.InsufficientBalance() if balance < amountMin.
     /// If balance is zero (and amountMin is 0), this is a no-op.
     ///
     /// This function deposits the FULL balance, including any tokens that were already in the contract
@@ -161,7 +162,7 @@ interface ISwapper {
     /// overestimates the repay amount. Use `type(uint256).max` to repay all debt — it is passed
     /// through to the vault which resolves it to the exact outstanding amount.
     ///
-    /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with Erc20Lib.InsufficientBalance() if balance < amountMin.
     ///
     /// @param token The borrowed asset (same as the vault's underlying).
     /// @param vault The Euler lending vault where debt is tracked.
@@ -196,7 +197,7 @@ interface ISwapper {
     /// @dev Sends the entire `token.balanceOf(address(this))` to `to`. Use this to extract swap output
     /// when the output should go directly to the user rather than into a vault.
     ///
-    /// Includes a slippage check: reverts with `Swapper_InsufficientBalance` if balance < amountMin.
+    /// Includes a slippage check: reverts with Erc20Lib.InsufficientBalance() if balance < amountMin.
     /// If balance is zero (and amountMin is 0), this is a no-op.
     ///
     /// @param token The ERC20 token to transfer.

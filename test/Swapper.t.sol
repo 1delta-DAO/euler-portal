@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {Swapper} from "../contracts/Swapper.sol";
 import {ISwapper} from "../contracts/interfaces/ISwapper.sol";
 import {SafeERC20Lib} from "../contracts/lib/SafeERC20Lib.sol";
+import {Erc20Lib} from "../contracts/lib/Erc20Lib.sol";
 
 import {
     MockERC20,
@@ -106,7 +107,7 @@ contract SwapperTest is Test {
     function test_deposit_revertsIfBelowMin() public {
         _fundSwapperWithTokenB(50e18);
 
-        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         swapper.deposit(address(tokenB), address(vault), 100e18, user);
     }
 
@@ -175,7 +176,7 @@ contract SwapperTest is Test {
     function test_repay_revertsIfBelowMin() public {
         _fundSwapperWithTokenB(10e18);
 
-        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         swapper.repay(address(tokenB), address(vault), 10e18, 50e18, user);
     }
 
@@ -203,7 +204,7 @@ contract SwapperTest is Test {
     function test_repayAndDeposit_revertsIfBelowMin() public {
         _fundSwapperWithTokenB(10e18);
 
-        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         swapper.repayAndDeposit(address(tokenB), address(vault), type(uint256).max, 50e18, user);
     }
 
@@ -234,7 +235,7 @@ contract SwapperTest is Test {
     function test_sweep_revertsIfBelowMin() public {
         _fundSwapperWithTokenA(50e18);
 
-        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         swapper.sweep(address(tokenA), 100e18, receiver);
     }
 
@@ -486,7 +487,7 @@ contract SwapperTest is Test {
     function test_sweepNative_revertsIfBelowMin() public {
         vm.deal(address(swapper), 0.5 ether);
 
-        vm.expectRevert(ISwapper.Swapper_InsufficientBalance.selector);
+        vm.expectRevert(Erc20Lib.InsufficientBalance.selector);
         swapper.sweepNative(1 ether, receiver);
     }
 
