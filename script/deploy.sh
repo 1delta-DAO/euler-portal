@@ -31,13 +31,22 @@ RPC_URL="${!rpc_var:?$rpc_var is not set in .env}"
 EVC="${!evc_var:?$evc_var is not set in .env}"
 VERIFIER="${!verifier_var:-etherscan}"
 VERIFIER_URL="${!verifier_url_var:-}"
-CHAIN_API_KEY="${!api_key_var:-$ETHERSCAN_API_KEY}"
+CHAIN_API_KEY="${!api_key_var:-}"
 
 # ── Build forge command ─────────────────────────────────────────────
 
-VERIFY_FLAGS=(--verify --verifier "$VERIFIER")
-[[ -n "$VERIFIER_URL" ]] && VERIFY_FLAGS+=(--verifier-url "$VERIFIER_URL")
-[[ -n "$CHAIN_API_KEY" ]] && VERIFY_FLAGS+=(--etherscan-api-key "$CHAIN_API_KEY")
+# Use chain-specific key if set, otherwise fall back to global key.
+# Skip verification entirely if VERIFIER_{chainId}=none.
+VERIFY_FLAGS=()
+if [[ "$VERIFIER" == "none" ]]; then
+    echo "⚠ Verification disabled for chain $CHAIN_ID"
+elif [[ -n "$CHAIN_API_KEY" || -n "${ETHERSCAN_API_KEY:-}" ]]; then
+    VERIFY_FLAGS=(--verify --verifier "$VERIFIER")
+    [[ -n "$VERIFIER_URL" ]] && VERIFY_FLAGS+=(--verifier-url "$VERIFIER_URL")
+    VERIFY_FLAGS+=(--etherscan-api-key "${CHAIN_API_KEY:-$ETHERSCAN_API_KEY}")
+else
+    echo "⚠ No API key for chain $CHAIN_ID — skipping verification"
+fi
 
 echo "=== Deploying to chain $CHAIN_ID ==="
 echo "RPC:      $RPC_URL"
